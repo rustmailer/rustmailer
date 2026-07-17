@@ -23,8 +23,8 @@ jobs:
             os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          # - target: x86_64-pc-windows-msvc
+          #   os: windows-latest
 
     steps:
       - name: Checkout code
@@ -53,15 +53,6 @@ jobs:
             unzip protoc-31.1-osx-x86_64.zip -d protoc
             echo "${PWD}/protoc/bin" >> $GITHUB_PATH
             cp -r protoc/include/* protos/
-
-      - name: Install protoc on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-            Invoke-WebRequest -Uri https://github.com/protocolbuffers/protobuf/releases/download/v31.1/protoc-31.1-win64.zip -OutFile protoc.zip
-            Expand-Archive protoc.zip -DestinationPath protoc
-            Add-Content $env:GITHUB_PATH "$PWD\protoc\bin"
-            Copy-Item -Recurse protoc\include\* protos\
 
       - name: Setup Node.js & pnpm
         uses: actions/setup-node@v4
@@ -106,25 +97,6 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: release/${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-      
-      - name: Create zip archive (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          mkdir -p release
-          $BINARY = "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}.exe"
-          Copy-Item -Path $BINARY -Destination release/
-          Copy-Item -Path README.md -Destination release/
-          Copy-Item -Path LICENSE -Destination release/
-          Copy-Item -Path license.html -Destination release/
-          Compress-Archive -Path release\* -DestinationPath "release/${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.target }}.zip" -Force
-
-      - name: Upload build artifact
-        if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: release/${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.target }}.zip
 
   release:
     name: Create GitHub Release
