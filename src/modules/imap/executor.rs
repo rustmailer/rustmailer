@@ -11,7 +11,7 @@ use bb8::Pool;
 use futures::{StreamExt, TryStreamExt};
 use mail_parser::MessageParser;
 use std::collections::HashSet;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// The IMAP query to fetch email metadata including headers and body structure.
 const RICH_METADATA_QUERY: &str = "(UID BODYSTRUCTURE RFC822.SIZE INTERNALDATE FLAGS BODY.PEEK[HEADER.FIELDS (BCC CC Date From In-Reply-To Sender Return-Path Message-ID Subject MIME-Version References Reply-To To Received)])";
@@ -188,7 +188,7 @@ impl ImapExecutor {
         let result: Result<Vec<Fetch>, _> = async {
             session.examine(mailbox_name).await?;
 
-            let list = session
+            let mut stream = session
                 .uid_fetch(
                     uid_set.as_str(),
                     if minimal {
@@ -199,8 +199,19 @@ impl ImapExecutor {
                 )
                 .await?;
 
-            let result = list.try_collect::<Vec<Fetch>>().await?;
-            Ok(result)
+            let mut results = Vec::new();
+
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(fetch) => results.push(fetch),
+                    Err(e) => {
+                        error!("Failed to parse FETCH response, skipping: {:?}", e);
+                        debug!("Error details: {:#?}", e);
+                        continue;
+                    }
+                }
+            }
+            Ok(results)
         }
         .await;
 
@@ -326,10 +337,21 @@ impl ImapExecutor {
                 RICH_METADATA_QUERY
             };
 
-            let list = session.fetch(sequence_set.as_str(), query).await?;
-            let result = list.try_collect::<Vec<Fetch>>().await?;
+            let mut stream = session.fetch(sequence_set.as_str(), query).await?;
+            let mut results = Vec::new();
 
-            Ok((result, total))
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(fetch) => results.push(fetch),
+                    Err(e) => {
+                        error!("Failed to parse FETCH response, skipping: {:?}", e);
+                        debug!("Error details: {:#?}", e);
+                        continue;
+                    }
+                }
+            }
+
+            Ok((results, total))
         }
         .await;
 
@@ -394,10 +416,21 @@ impl ImapExecutor {
                 mailbox_name, sequence_set, page, page_size, desc
             );
 
-            let list = session.fetch(sequence_set.as_str(), UID_FLAGS).await?;
-            let result = list.try_collect::<Vec<Fetch>>().await?;
+            let mut stream = session.fetch(sequence_set.as_str(), UID_FLAGS).await?;
 
-            Ok(result)
+            let mut results = Vec::new();
+
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(fetch) => results.push(fetch),
+                    Err(e) => {
+                        error!("Failed to parse FETCH response, skipping: {:?}", e);
+                        debug!("Error details: {:#?}", e);
+                        continue;
+                    }
+                }
+            }
+            Ok(results)
         }
         .await;
 
@@ -428,10 +461,20 @@ impl ImapExecutor {
         let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
             session.examine(mailbox_name).await?;
 
-            let list = session.uid_fetch(uid_set, UID_FLAGS).await?;
-            let result = list.try_collect::<Vec<Fetch>>().await?;
+            let mut stream = session.uid_fetch(uid_set, UID_FLAGS).await?;
+            let mut results = Vec::new();
 
-            Ok(result)
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(fetch) => results.push(fetch),
+                    Err(e) => {
+                        error!("Failed to parse FETCH response, skipping: {:?}", e);
+                        debug!("Error details: {:#?}", e);
+                        continue;
+                    }
+                }
+            }
+            Ok(results)
         }
         .await;
 
@@ -460,10 +503,23 @@ impl ImapExecutor {
         let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
             session.examine(mailbox_name).await?;
 
-            let list = session.uid_fetch(uid_set, BODYSTRUCTURE).await?;
-            let result = list.try_collect::<Vec<Fetch>>().await?;
+            let mut stream = session.uid_fetch(uid_set, BODYSTRUCTURE).await?;
+            let mut results = Vec::new();
 
-            Ok(result)
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(fetch) => {
+                        results.push(fetch);
+                    }
+                    Err(e) => {
+                        error!("Failed to parse FETCH response, skipping: {:?}", e);
+                        debug!("Error details: {:#?}", e);
+                        continue;
+                    }
+                }
+            }
+
+            Ok(results)
         }
         .await;
 
@@ -499,10 +555,20 @@ impl ImapExecutor {
                 RICH_METADATA_QUERY
             };
 
-            let list = session.uid_fetch(uid_set, query).await?;
-            let result = list.try_collect::<Vec<Fetch>>().await?;
+            let mut stream = session.uid_fetch(uid_set, query).await?;
+            let mut results = Vec::new();
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(fetch) => results.push(fetch),
+                    Err(e) => {
+                        error!("Failed to parse FETCH response, skipping: {:?}", e);
+                        debug!("Error details: {:#?}", e);
+                        continue;
+                    }
+                }
+            }
 
-            Ok(result)
+            Ok(results)
         }
         .await;
 
@@ -584,10 +650,20 @@ impl ImapExecutor {
             session.examine(mailbox_name).await?;
 
             let query = format!("(UID BODY.PEEK[{}])", path);
-            let list = session.uid_fetch(uid, &query).await?;
-            let result = list.try_collect::<Vec<Fetch>>().await?;
+            let mut stream = session.uid_fetch(uid, &query).await?;
+            let mut results = Vec::new();
 
-            Ok(result)
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(fetch) => results.push(fetch),
+                    Err(e) => {
+                        error!("Failed to parse FETCH response, skipping: {:?}", e);
+                        debug!("Error details: {:#?}", e);
+                        continue;
+                    }
+                }
+            }
+            Ok(results)
         }
         .await;
 
@@ -676,9 +752,20 @@ impl ImapExecutor {
 
         let result: Result<Vec<Fetch>, async_imap::error::Error> = async {
             session.select(mailbox_name).await?;
-            let list = session.uid_store(uid_set, query).await?;
-            let result = list.try_collect::<Vec<Fetch>>().await?;
-            Ok(result)
+            let mut stream = session.uid_store(uid_set, query).await?;
+            let mut results = Vec::new();
+
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(fetch) => results.push(fetch),
+                    Err(e) => {
+                        error!("Failed to parse FETCH response, skipping: {:?}", e);
+                        debug!("Error details: {:#?}", e);
+                        continue;
+                    }
+                }
+            }
+            Ok(results)
         }
         .await;
 
