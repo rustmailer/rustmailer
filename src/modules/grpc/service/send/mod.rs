@@ -6,17 +6,20 @@ use crate::modules::common::auth::ClientContext;
 use crate::modules::common::paginated::paginate_vec;
 use crate::modules::error::code::ErrorCode;
 use crate::modules::grpc::auth::require_account_access;
+use crate::modules::message::append::ReplyDraft as RustMailerReplyDraft;
 use crate::modules::rest::response::DataPage;
 use crate::modules::scheduler::model::TaskStatus;
 use crate::modules::smtp::queue::message::SendEmailTask as RustMailerQueuedEmailTask;
 use crate::modules::smtp::request::forward::ForwardEmailRequest as RustMailerForwardEmailRequest;
+use crate::modules::smtp::request::new::SendDraftRequest as RustMailerSendDraftRequest;
 use crate::modules::smtp::request::new::SendEmailRequest as RustMailerSendEmailRequest;
 use crate::modules::smtp::request::reply::ReplyEmailRequest as RustMailerReplyEmailRequest;
 use crate::modules::tasks::queue::RustMailerTaskQueue;
 use crate::modules::{
     grpc::service::rustmailer_grpc::{
         EmailTask, Empty, ForwardMailRequest, GetTaskRequest, ListTasksRequest, PagedEmailTask,
-        RemoveTaskRequest, ReplyMailRequest, SendMailService, SendNewMailRequest,
+        RemoveTaskRequest, ReplyDraft, ReplyMailRequest, SaveDraftRequest, SendDraftRequest,
+        SendMailService, SendNewMailRequest,
     },
     smtp::request::builder::EmailBuilder,
 };
@@ -86,6 +89,36 @@ impl SendMailService for RustMailerSendMailService {
             .try_into()
             .map_err(|e: &'static str| raise_error!(e.to_string(), ErrorCode::InvalidParameter))?;
         email_request.build(req.account_id).await?;
+        Ok(Response::new(Empty::default()))
+    }
+
+    async fn save_draft(
+        &self,
+        request: Request<SaveDraftRequest>,
+    ) -> Result<Response<ReplyDraft>, Status> {
+        let req = require_account_access(request, |r| r.account_id)?;
+        let email_request: RustMailerSendEmailRequest = req
+            .request
+            .ok_or_else(|| {
+                raise_error!(
+                    "'SendEmailRequest' must be set".into(),
+                    ErrorCode::InvalidParameter
+                )
+            })?
+            .try_into()
+            .map_err(|e: &'static str| raise_error!(e.to_string(), ErrorCode::InvalidParameter))?;
+
+        let draft: RustMailerReplyDraft = email_request.save_as_draft(req.account_id).await?;
+        Ok(Response::new(draft.into()))
+    }
+
+    async fn send_draft(
+        &self,
+        request: Request<SendDraftRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = require_account_access(request, |r| r.account_id)?;
+        let draft_request = RustMailerSendDraftRequest { id: req.id };
+        draft_request.send_draft(req.account_id).await?;
         Ok(Response::new(Empty::default()))
     }
 

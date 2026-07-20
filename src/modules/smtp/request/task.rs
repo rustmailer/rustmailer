@@ -56,6 +56,13 @@ pub struct SmtpTask {
     pub control: Option<SendControl>,
     pub cache_key: String,
     pub answer_email: Option<AnswerEmail>,
+    /// If set, the draft with this UID will be deleted from the drafts mailbox
+    /// after the email is successfully sent.
+    #[serde(default)]
+    pub delete_draft_uid: Option<String>,
+    /// The encoded name of the drafts mailbox containing the draft to delete.
+    #[serde(default)]
+    pub delete_draft_mailbox: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -179,6 +186,12 @@ impl SmtpTask {
                 .save_to_sent_if_needed(self.account_id, body)
                 .await?;
         }
+
+        if let (Some(uid), Some(mailbox)) = (&self.delete_draft_uid, &self.delete_draft_mailbox) {
+            let executor = RUST_MAIL_CONTEXT.imap(self.account_id).await?;
+            executor.uid_delete_envelopes(uid, mailbox).await?;
+        }
+
         Ok(())
     }
 

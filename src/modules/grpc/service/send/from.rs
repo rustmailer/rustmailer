@@ -5,6 +5,7 @@
 use crate::modules::{
     common::Addr,
     grpc::service::rustmailer_grpc,
+    message::append::ReplyDraft as RustMailerReplyDraft,
     rest::response::DataPage,
     scheduler::model::TaskStatus,
     smtp::{
@@ -471,6 +472,16 @@ impl From<DataPage<SendEmailTask>> for rustmailer_grpc::PagedEmailTask {
             total_items: value.total_items,
             items: value.items.into_iter().map(Into::into).collect(),
             total_pages: value.total_pages,
+        }
+    }
+}
+
+impl From<RustMailerReplyDraft> for rustmailer_grpc::ReplyDraft {
+    fn from(value: RustMailerReplyDraft) -> Self {
+        Self {
+            id: value.id,
+            draft_id: value.draft_id,
+            draft_folder: value.draft_folder,
         }
     }
 }

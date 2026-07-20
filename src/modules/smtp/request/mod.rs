@@ -920,6 +920,8 @@ impl EmailHandler {
                 .collect(),
             cache_key,
             answer_email,
+            delete_draft_uid: None,
+            delete_draft_mailbox: None,
         };
 
         let delay_seconds = send_at

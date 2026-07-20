@@ -11,10 +11,11 @@ use crate::{
         common::rustls::RustMailerTls,
         context::Initialize,
         grpc::service::rustmailer_grpc::{
-            AppendReplyToDraftRequest, BatchTagRequest, ExternalOAuth2Request,
-            GetThreadMessagesRequest, ListMessagesRequest, ListThreadsRequest,
-            MessageServiceClient, OAuth2ServiceClient, TagAndColor, TemplateSentTestRequest,
-            TemplatesServiceClient, UnifiedSearchRequest,
+            AppendReplyToDraftRequest, BatchTagRequest, EmailAddress as GrpcEmailAddress,
+            ExternalOAuth2Request, GetThreadMessagesRequest, ListMessagesRequest,
+            ListThreadsRequest, MessageServiceClient, OAuth2ServiceClient, Recipient,
+            SaveDraftRequest, SendDraftRequest, SendEmailRequest, SendMailServiceClient,
+            TagAndColor, TemplateSentTestRequest, TemplatesServiceClient, UnifiedSearchRequest,
         },
     },
 };
@@ -295,4 +296,208 @@ async fn test9() {
         format!("Bearer {}", "0ZRTSl2WhTOUQYMCgSm45i1o"),
     );
     grpc_client.tag_messages(request).await.unwrap();
+}
+
+// ── Draft save + send tests ──
+
+const RECIPIENT_EMAIL: &str = "rustmailer.git@gmail.com";
+const AUTH_TOKEN: &str = "2mY4irNCahQXeSarHYje1P1W";
+
+fn recipient() -> Recipient {
+    Recipient {
+        to: vec![GrpcEmailAddress {
+            name: None,
+            address: RECIPIENT_EMAIL.into(),
+        }],
+        cc: vec![],
+        bcc: vec![],
+        reply_to: vec![],
+        template_params: None,
+        send_at: None,
+    }
+}
+
+fn random_subject(label: &str) -> String {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    format!("Draft test [{}] - {}", label, ts)
+}
+
+fn send_mail_client() -> SendMailServiceClient {
+    let cfg = ClientConfig::builder()
+        .uri("http://localhost:16630")
+        .build()
+        .unwrap();
+    let mut grpc_client = SendMailServiceClient::new(cfg);
+    grpc_client.set_accept_compressed([CompressionEncoding::GZIP]);
+    grpc_client.set_send_compressed(CompressionEncoding::GZIP);
+    grpc_client
+}
+
+fn auth_request<T>(request: T) -> poem_grpc::Request<T> {
+    let mut req = poem_grpc::Request::new(request);
+    req.metadata_mut()
+        .insert(AUTHORIZATION, format!("Bearer {}", AUTH_TOKEN));
+    req
+}
+
+#[tokio::test]
+async fn test_save_and_send_draft_imap() {
+    RustMailerTls::initialize().await.unwrap();
+
+    const ACCOUNT_ID: u64 = 6696853957389495;
+    let client = send_mail_client();
+
+    // 1. Save draft
+    let email = SendEmailRequest {
+        from: None,
+        recipients: vec![recipient()],
+        subject: Some(random_subject("IMAP")),
+        text: Some("This is a test draft from IMAP account.".into()),
+        html: None,
+        preview: None,
+        eml: None,
+        template_id: None,
+        attachments: vec![],
+        headers: Default::default(),
+        send_control: None,
+    };
+
+    let save_req = SaveDraftRequest {
+        account_id: ACCOUNT_ID,
+        request: Some(email),
+    };
+
+    let response = client
+        .save_draft(auth_request(save_req))
+        .await
+        .expect("IMAP save_draft should succeed");
+    let draft = response.into_inner();
+    println!("IMAP draft saved: id={}, folder={}", draft.id, draft.draft_folder);
+    assert!(!draft.id.is_empty(), "draft id should not be empty");
+    assert!(!draft.draft_folder.is_empty(), "draft folder should not be empty");
+    assert!(draft.draft_id.is_none(), "IMAP should not have draft_id");
+
+    // 2. Send draft
+    let send_req = SendDraftRequest {
+        account_id: ACCOUNT_ID,
+        id: draft.id.clone(),
+    };
+
+    client
+        .send_draft(auth_request(send_req))
+        .await
+        .expect("IMAP send_draft should succeed");
+    println!("IMAP draft sent successfully: id={}", draft.id);
+}
+
+#[tokio::test]
+async fn test_save_and_send_draft_gmail() {
+    RustMailerTls::initialize().await.unwrap();
+
+    const ACCOUNT_ID: u64 = 6095192688691414;
+    let client = send_mail_client();
+
+    // 1. Save draft
+    let email = SendEmailRequest {
+        from: None,
+        recipients: vec![recipient()],
+        subject: Some(random_subject("Gmail")),
+        text: Some("This is a test draft from Gmail account.".into()),
+        html: None,
+        preview: None,
+        eml: None,
+        template_id: None,
+        attachments: vec![],
+        headers: Default::default(),
+        send_control: None,
+    };
+
+    let save_req = SaveDraftRequest {
+        account_id: ACCOUNT_ID,
+        request: Some(email),
+    };
+
+    let response = client
+        .save_draft(auth_request(save_req))
+        .await
+        .expect("Gmail save_draft should succeed");
+    let draft = response.into_inner();
+    println!(
+        "Gmail draft saved: id={}, draft_id={:?}, folder={}",
+        draft.id, draft.draft_id, draft.draft_folder
+    );
+    assert!(!draft.id.is_empty(), "message id should not be empty");
+    assert!(!draft.draft_folder.is_empty(), "draft folder should not be empty");
+    assert!(
+        draft.draft_id.is_some(),
+        "Gmail should populate draft_id"
+    );
+
+    // 2. Send draft — use draft_id for Gmail
+    let send_req = SendDraftRequest {
+        account_id: ACCOUNT_ID,
+        id: draft.draft_id.unwrap(),
+    };
+
+    client
+        .send_draft(auth_request(send_req))
+        .await
+        .expect("Gmail send_draft should succeed");
+    println!("Gmail draft sent successfully");
+}
+
+#[tokio::test]
+async fn test_save_and_send_draft_outlook() {
+    RustMailerTls::initialize().await.unwrap();
+
+    const ACCOUNT_ID: u64 = 3815676991897752;
+    let client = send_mail_client();
+
+    // 1. Save draft
+    let email = SendEmailRequest {
+        from: None,
+        recipients: vec![recipient()],
+        subject: Some(random_subject("Outlook")),
+        text: Some("This is a test draft from Outlook account.".into()),
+        html: None,
+        preview: None,
+        eml: None,
+        template_id: None,
+        attachments: vec![],
+        headers: Default::default(),
+        send_control: None,
+    };
+
+    let save_req = SaveDraftRequest {
+        account_id: ACCOUNT_ID,
+        request: Some(email),
+    };
+
+    let response = client
+        .save_draft(auth_request(save_req))
+        .await
+        .expect("Outlook save_draft should succeed");
+    let draft = response.into_inner();
+    println!(
+        "Outlook draft saved: id={}, folder={}",
+        draft.id, draft.draft_folder
+    );
+    assert!(!draft.id.is_empty(), "message id should not be empty");
+    assert!(!draft.draft_folder.is_empty(), "draft folder should not be empty");
+    assert!(draft.draft_id.is_none(), "Outlook should not have draft_id");
+
+    // 2. Send draft — use id for Graph API
+    let send_req = SendDraftRequest {
+        account_id: ACCOUNT_ID,
+        id: draft.id.clone(),
+    };
+
+    client
+        .send_draft(auth_request(send_req))
+        .await
+        .expect("Outlook send_draft should succeed");
+    println!("Outlook draft sent successfully: id={}", draft.id);
 }

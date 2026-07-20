@@ -219,6 +219,7 @@ impl AppendReplyToDraftRequest {
             .await?;
         Ok(ReplyDraft {
             id: uid.to_string(),
+            draft_id: None,
             draft_folder: drafts_mailbox.name.clone(),
         })
     }
@@ -330,6 +331,12 @@ pub struct ReplyDraft {
     /// - For IMAP accounts, this is the UID of the message;
     /// - For Gmail / Graph API, this is the message ID.
     pub id: String,
+    /// The provider-specific draft identifier.
+    ///
+    /// This is only populated for Gmail API accounts, where it holds the Gmail draft ID
+    /// (distinct from the message ID stored in `id`). For IMAP and Graph API accounts,
+    /// this field is `None` — use `id` directly.
+    pub draft_id: Option<String>,
     /// Draft folder name:
     /// - In IMAP, this is the name of the drafts folder;
     /// - In Gmail API, this is the name of the draft label;

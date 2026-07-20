@@ -481,6 +481,15 @@ impl GmailClient {
         let client = HttpClient::new(use_proxy).await?;
         let access_token = Self::get_access_token(account_id).await?;
         let value = client.post(url, &access_token, Some(&body), true).await?;
+        let draft_id = value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                raise_error!(
+                    "Missing id from Gmail create draft response".into(),
+                    ErrorCode::InternalError
+                )
+            })?;
         let message_id = value
             .get("message")
             .and_then(|m| m.get("id"))
@@ -500,8 +509,26 @@ impl GmailClient {
         })?;
         Ok(ReplyDraft {
             id: message_id.into(),
+            draft_id: Some(draft_id.into()),
             draft_folder: name.into(),
         })
+    }
+
+    /// Sends an existing draft by its Gmail draft ID.
+    ///
+    /// The `draft_id` is the value returned in `ReplyDraft.draft_id` from `create_draft`.
+    /// This is distinct from the message ID stored in `ReplyDraft.id`.
+    pub async fn send_draft(
+        account_id: u64,
+        use_proxy: Option<u64>,
+        draft_id: &str,
+    ) -> RustMailerResult<()> {
+        let url = "https://gmail.googleapis.com/gmail/v1/users/me/drafts/send";
+        let client = HttpClient::new(use_proxy).await?;
+        let access_token = Self::get_access_token(account_id).await?;
+        let body = json!({ "id": draft_id });
+        client.post(url, &access_token, Some(&body), true).await?;
+        Ok(())
     }
 
     pub async fn send_email(

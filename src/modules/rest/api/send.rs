@@ -5,6 +5,7 @@
 use crate::modules::common::auth::ClientContext;
 use crate::modules::common::paginated::paginate_vec;
 use crate::modules::error::code::ErrorCode;
+use crate::modules::message::append::ReplyDraft;
 use crate::modules::rest::api::ApiTags;
 use crate::modules::rest::response::DataPage;
 use crate::modules::rest::ApiResult;
@@ -12,7 +13,7 @@ use crate::modules::scheduler::model::TaskStatus;
 use crate::modules::smtp::queue::message::SendEmailTask;
 use crate::modules::smtp::request::builder::EmailBuilder;
 use crate::modules::smtp::request::forward::ForwardEmailRequest;
-use crate::modules::smtp::request::new::SendEmailRequest;
+use crate::modules::smtp::request::new::{SendDraftRequest, SendEmailRequest};
 use crate::modules::smtp::request::reply::ReplyEmailRequest;
 use crate::modules::tasks::queue::RustMailerTaskQueue;
 use crate::raise_error;
@@ -45,6 +46,51 @@ impl SendMailApi {
         context.require_account_access(account_id)?;
         let request = request.0;
         Ok(request.build(account_id).await?)
+    }
+
+    /// Creates a new draft email without sending it.
+    /// This endpoint constructs and saves a draft email to the account's drafts folder.
+    #[oai(
+        path = "/save-draft/:account_id",
+        method = "post",
+        operation_id = "save_draft"
+    )]
+    async fn save_draft(
+        &self,
+        /// The ID of the email account for which the draft is created.
+        account_id: Path<u64>,
+        /// Request body containing the draft email content.
+        payload: Json<SendEmailRequest>,
+        /// Request context (authentication, authorization).
+        context: ClientContext,
+    ) -> ApiResult<Json<ReplyDraft>> {
+        let account_id = account_id.0;
+        context.require_account_access(account_id)?;
+        Ok(Json(payload.0.save_as_draft(account_id).await?))
+    }
+
+    /// Sends an existing draft email.
+    ///
+    /// The draft must have been previously created via `save-draft` or `append-reply-to-draft`.
+    /// For Gmail API accounts, pass the `draft_id` from the draft response.
+    /// For Graph API and IMAP accounts, pass the `id` from the draft response.
+    #[oai(
+        path = "/send-draft/:account_id",
+        method = "post",
+        operation_id = "send_draft"
+    )]
+    async fn send_draft(
+        &self,
+        /// The ID of the email account that owns the draft.
+        account_id: Path<u64>,
+        /// Request body containing the draft identifier.
+        payload: Json<SendDraftRequest>,
+        /// Request context (authentication, authorization).
+        context: ClientContext,
+    ) -> ApiResult<()> {
+        let account_id = account_id.0;
+        context.require_account_access(account_id)?;
+        Ok(payload.0.send_draft(account_id).await?)
     }
 
     /// Sends a reply to an existing email for a specified account.

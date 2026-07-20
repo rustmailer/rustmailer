@@ -386,6 +386,42 @@ impl OutlookClient {
             ), ErrorCode::InternalError))?;
         Ok(ReplyDraft {
             id: id.into(),
+            draft_id: None,
+            draft_folder: folder.display_name,
+        })
+    }
+
+    /// Creates a new draft message (not a reply) in the Outlook drafts folder.
+    pub async fn create_draft(
+        account_id: u64,
+        use_proxy: Option<u64>,
+        raw_base64: String,
+    ) -> RustMailerResult<ReplyDraft> {
+        let url = "https://graph.microsoft.com/v1.0/me/messages";
+        let client = HttpClient::new(use_proxy).await?;
+        let access_token = Self::get_access_token(account_id).await?;
+        let value = client
+            .post_text::<()>(url, &access_token, raw_base64, true)
+            .await?;
+        let id = value.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+            raise_error!(
+                "Missing id from Graph create draft response.".into(),
+                ErrorCode::InternalError
+            )
+        })?;
+
+        let url = format!("https://graph.microsoft.com/v1.0/me/mailFolders/drafts");
+        let value = client.get(&url, &access_token).await.map_err(|e| {
+            raise_error!(format!("Request error: {e:#?}"), ErrorCode::InternalError)
+        })?;
+        let folder = serde_json::from_value::<MailFolder>(value)
+            .map_err(|e| raise_error!(format!(
+                "Failed to deserialize Graph API response into MailFolder: {:#?}. Possible model mismatch or API change.",
+                e
+            ), ErrorCode::InternalError))?;
+        Ok(ReplyDraft {
+            id: id.into(),
+            draft_id: None,
             draft_folder: folder.display_name,
         })
     }
@@ -403,6 +439,21 @@ impl OutlookClient {
             .post_text::<()>(url, &access_token, message_base64, false)
             .await?;
        Ok(())
+    }
+
+    /// Sends an existing draft message by its Graph API message ID.
+    ///
+    /// The `message_id` is the value returned in `ReplyDraft.id` from `create_draft`.
+    pub async fn send_draft(
+        account_id: u64,
+        use_proxy: Option<u64>,
+        message_id: &str,
+    ) -> RustMailerResult<()> {
+        let url = format!("https://graph.microsoft.com/v1.0/me/messages/{message_id}/send");
+        let client = HttpClient::new(use_proxy).await?;
+        let access_token = Self::get_access_token(account_id).await?;
+        client.post::<()>(&url, &access_token, None, false).await?;
+        Ok(())
     }
 
     pub async fn batch_get_categories(

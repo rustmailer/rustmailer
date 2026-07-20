@@ -1955,6 +1955,20 @@ message ForwardEmailRequest {
   SendControl send_control = 14;
 }
 
+// ReplyDraft represents the result of saving a draft email.
+message ReplyDraft {
+  // The message identifier:
+  // - For IMAP accounts, this is the UID of the message;
+  // - For Gmail / Graph API, this is the message ID.
+  string id = 1;
+  // The provider-specific draft identifier.
+  // This is only populated for Gmail API accounts (the Gmail draft ID).
+  // For IMAP and Graph API, use `id` directly.
+  optional string draft_id = 2;
+  // The name of the drafts folder or label where the draft was saved.
+  string draft_folder = 3;
+}
+
 // EmailTask represents a single email sending task managed by the system.
 message EmailTask {
   // The unique identifier for the email task.
@@ -2180,6 +2194,22 @@ message ForwardMailRequest {
   ForwardEmailRequest request = 2;
 }
 
+// SaveDraftRequest is used to create a new draft email without sending it.
+message SaveDraftRequest {
+  // The ID of the account for which the draft is created.
+  uint64 account_id = 1;
+  // The details of the draft email to save.
+  SendEmailRequest request = 2;
+}
+
+// SendDraftRequest is used to send an existing draft email.
+message SendDraftRequest {
+  // The ID of the account that owns the draft.
+  uint64 account_id = 1;
+  // The draft identifier returned by SaveDraft (ReplyDraft.draft_id for Gmail, ReplyDraft.id for others).
+  string id = 2;
+}
+
 // ListTasksRequest defines parameters for listing email tasks with pagination and filtering by status.
 message ListTasksRequest {
   // Optional: The requested page number (1-based).
@@ -2218,6 +2248,10 @@ service SendMailService {
   rpc GetEmailTask (GetTaskRequest) returns (EmailTask);
   // Removes an email task.
   rpc RemoveEmailTask (RemoveTaskRequest) returns (Empty);
+  // Creates a new draft email without sending it.
+  rpc SaveDraft (SaveDraftRequest) returns (ReplyDraft);
+  // Sends an existing draft email.
+  rpc SendDraft (SendDraftRequest) returns (Empty);
 }
 
 // EventType enumerates the types of events that can trigger webhooks.
