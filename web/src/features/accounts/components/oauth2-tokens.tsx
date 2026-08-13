@@ -15,12 +15,12 @@ import {
 } from '@/components/ui/dialog'
 import { AccountEntity } from '../data/schema'
 import { Button } from '@/components/ui/button'
-import { get_oauth2_tokens } from '@/api/oauth2/api'
-import { useQuery } from '@tanstack/react-query'
+import { get_oauth2_tokens, refresh_oauth2_token } from '@/api/oauth2/api'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { TableSkeleton } from '@/components/table-skeleton'
-import { FileIcon } from 'lucide-react'
+import { FileIcon, RefreshCw } from 'lucide-react'
 import { format, formatDistanceToNow } from 'date-fns'
 import LongText from '@/components/long-text'
 import { useCallback } from 'react'
@@ -28,6 +28,7 @@ import { IconCopy } from '@tabler/icons-react'
 import { toast } from '@/hooks/use-toast'
 import { ToastAction } from '@/components/ui/toast'
 import { useNavigate } from '@tanstack/react-router'
+import { cn } from '@/lib/utils'
 
 interface Props {
   currentRow: AccountEntity
@@ -37,6 +38,7 @@ interface Props {
 
 export function OAuth2TokensDialog({ currentRow, open, onOpenChange }: Props) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { data: oauth2Tokens, isLoading } = useQuery({
     queryKey: ['oauth2-tokens', currentRow.id],
     queryFn: () => get_oauth2_tokens(currentRow.id),
@@ -71,6 +73,24 @@ export function OAuth2TokensDialog({ currentRow, open, onOpenChange }: Props) {
     }
   }, []);
 
+  const refreshMutation = useMutation({
+    mutationFn: () => refresh_oauth2_token(currentRow.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['oauth2-tokens', currentRow.id] });
+      toast({
+        title: "Token refreshed",
+        description: "The OAuth2 token has been successfully refreshed.",
+      });
+    },
+    onError: () => {
+      toast({
+        variant: "destructive",
+        title: "Refresh failed",
+        description: "Failed to refresh the token. Please check your OAuth2 configuration.",
+      });
+    },
+  });
+
   return (
     <Dialog
       open={open}
@@ -100,12 +120,6 @@ export function OAuth2TokensDialog({ currentRow, open, onOpenChange }: Props) {
                 </TableHeader>
                 <TableBody>
                   <TableRow>
-                    <TableCell className='max-w-80'>OAuth2 Name</TableCell>
-                    <TableCell>
-                      <LongText className='max-w-[240px] sm:max-w-[430px]'>{oauth2Tokens.oauth2_name}</LongText>
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
                     <TableCell className='max-w-80'>Access Token</TableCell>
                     <TableCell>
                       <LongText className='max-w-[240px] sm:max-w-[430px]'>{oauth2Tokens.access_token}</LongText>
@@ -116,17 +130,19 @@ export function OAuth2TokensDialog({ currentRow, open, onOpenChange }: Props) {
                       </Button>
                     </TableCell>
                   </TableRow>
-                  <TableRow>
-                    <TableCell className='max-w-80'>Refresh Token</TableCell>
-                    <TableCell>
-                      <LongText className='max-w-[240px] sm:max-w-[430px]'>{oauth2Tokens.refresh_token}</LongText>
-                    </TableCell>
-                    <TableCell>
-                      <Button className='text-xs px-1.5 py-0.5' onClick={() => onCopy(false, oauth2Tokens.refresh_token)}>
-                        <IconCopy className="h-5 w-5" aria-hidden="true" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
+                  {oauth2Tokens.refresh_token && oauth2Tokens.refresh_token !== '' && (
+                    <TableRow>
+                      <TableCell className='max-w-80'>Refresh Token</TableCell>
+                      <TableCell>
+                        <LongText className='max-w-[240px] sm:max-w-[430px]'>{oauth2Tokens.refresh_token}</LongText>
+                      </TableCell>
+                      <TableCell>
+                        <Button className='text-xs px-1.5 py-0.5' onClick={() => onCopy(false, oauth2Tokens.refresh_token!)}>
+                          <IconCopy className="h-5 w-5" aria-hidden="true" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  )}
                   <TableRow>
                     <TableCell className='max-w-80'>Created At</TableCell>
                     <TableCell>
@@ -147,15 +163,33 @@ export function OAuth2TokensDialog({ currentRow, open, onOpenChange }: Props) {
                   <FileIcon className="h-10 w-10 text-muted-foreground" />
                   <h3 className="mt-4 text-lg font-semibold">No OAuth2 Tokens</h3>
                   <p className="mb-4 mt-2 text-sm text-muted-foreground">
-                    The account has not completed the authorization process. Please
-                    <a onClick={() => navigate({ to: '/oauth2' })} className="ml-1 text-blue-500 underline cursor-pointer">click here</a> to authorize the account.
+                    The account has not completed the authorization process.
                   </p>
+                  <div className="flex gap-2">
+                    {oauth2Tokens === null && (
+                      <Button onClick={() => navigate({ to: '/oauth2' })} variant="outline">
+                        Go to OAuth2 Configs
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
           </CardContent>
         </Card>
         <DialogFooter>
+          {oauth2Tokens && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refreshMutation.mutate()}
+              disabled={refreshMutation.isPending}
+              className="mr-auto"
+            >
+              <RefreshCw className={cn("h-4 w-4 mr-1", refreshMutation.isPending && "animate-spin")} />
+              Refresh Token
+            </Button>
+          )}
           <DialogClose asChild>
             <Button variant='outline' className="px-2 py-1 text-sm h-auto">Close</Button>
           </DialogClose>

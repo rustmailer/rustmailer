@@ -38,7 +38,7 @@ pub mod response;
 pub type ApiResult<T, E = ApiErrorResponse> = std::result::Result<T, E>;
 
 const DESCRIPTION: &str = r#"
-    RustMailer is a self-hosted IMAP/SMTP middleware platform designed for developers and businesses seeking a robust, scalable, and secure email solution.
+    RustMailer is a self-hosted IMAP, SMTP, Gmail API, Graph API middleware platform designed for developers and businesses seeking a robust, scalable, and secure email solution.
 
     - Provides seamless IMAP synchronization and reliable SMTP sending via blazing-fast REST and gRPC APIs.
     - Supports programmable email workflows, customizable filters, and webhook notifications.
@@ -67,7 +67,7 @@ pub async fn start_http_server() -> RustMailerResult<()> {
         .contact(ContactObject::new().email("rustmailer.git@gmail.com"))
         .license("https://rustmailer.com/license")
         .external_document("https://rustmailer.com/docs")
-        .summary("A self-hosted IMAP/SMTP middleware designed for developers");
+        .summary("A self-hosted Email Middleware for IMAP, SMTP, Gmail API, Graph API — built for developers");
 
     let swagger = api_service.swagger_ui();
     let redoc = api_service.redoc();

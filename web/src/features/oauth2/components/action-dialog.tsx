@@ -76,30 +76,28 @@ function convertToScopeSchema(authorizeScopes: z.infer<typeof authorizescopeSche
   }));
 }
 
+const grantTypeSchema = z.enum(['AuthorizationCode', 'ClientCredentials'], {
+  required_error: 'Grant type is required',
+});
+
 const oauth2Schema = z.object({
   description: z.string().max(255, { message: "Description must not exceed 255 characters." }).optional(),
   client_id: z.string({
     required_error: "Client ID is required",
   }).min(1, { message: "Client ID cannot be empty" }),
   client_secret: z.string().optional(),
+  grant_type: grantTypeSchema,
   auth_url: z.string({
     required_error: "Authorization URL is required",
   })
     .min(1, { message: "Authorization URL cannot be empty" })
-    .url({ message: "Invalid Authorization URL format" }),
-
+    .url({ message: "Invalid Authorization URL format" }).optional().or(z.literal('')),
   token_url: z.string({
     required_error: "Token URL is required",
   })
     .min(1, { message: "Token URL cannot be empty" })
     .url({ message: "Invalid Token URL format" }),
-
-  redirect_uri: z.string({
-    required_error: "Redirect URI is required",
-  })
-    .min(1, { message: "Redirect URI cannot be empty" })
-    .url({ message: "Invalid Redirect URI format" }),
-
+  redirect_uri: z.string().url({ message: "Invalid Redirect URI format" }).optional().or(z.literal('')),
   scopes: z.array(scopeSchema).optional(),
   extra_params: z.array(paramSchema).optional(),
   enabled: z.boolean(),
@@ -115,10 +113,11 @@ interface Props {
   onOpenChange: (open: boolean) => void
 }
 
-const defaultValues = {
+const defaultValues: OAuth2Form = {
   description: undefined,
   client_id: '',
   client_secret: '',
+  grant_type: 'AuthorizationCode',
   auth_url: '',
   token_url: '',
   redirect_uri: '',
@@ -138,6 +137,7 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
         description: currentRow.description ?? undefined,
         client_id: currentRow.client_id,
         client_secret: undefined,
+        grant_type: currentRow.grant_type,
         auth_url: currentRow.auth_url,
         token_url: currentRow.token_url,
         redirect_uri: currentRow.redirect_uri,
@@ -230,6 +230,7 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
         description: values.description,
         client_id: values.client_id,
         client_secret: prepareClientSecret(values.client_secret),
+        grant_type: values.grant_type,
         auth_url: values.auth_url,
         token_url: values.token_url,
         redirect_uri: values.redirect_uri,
@@ -243,6 +244,7 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
         description: values.description,
         client_id: values.client_id,
         client_secret: values.client_secret!,
+        grant_type: values.grant_type,
         auth_url: values.auth_url,
         token_url: values.token_url,
         redirect_uri: values.redirect_uri,
@@ -253,6 +255,8 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
       });
     }
   }
+
+  const isClientCredentials = form.watch('grant_type') === 'ClientCredentials'
 
   return (
     <Dialog
@@ -281,6 +285,8 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
               form.setValue("auth_url", "https://accounts.google.com/o/oauth2/v2/auth");
               form.setValue("token_url", "https://oauth2.googleapis.com/token");
               form.setValue("enabled", true);
+              form.setValue("grant_type", "AuthorizationCode");
+              form.setValue("redirect_uri", "http://localhost");
               form.setValue("scopes", [{ value: "https://mail.google.com/" }]);
               form.setValue("extra_params", [{ key: "access_type", value: "offline" }, { key: "prompt", value: "consent" }])
             }}
@@ -295,11 +301,29 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
               form.setValue("auth_url", "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize");
               form.setValue("token_url", "https://login.microsoftonline.com/consumers/oauth2/v2.0/token");
               form.setValue("enabled", true);
+              form.setValue("grant_type", "AuthorizationCode");
+              form.setValue("redirect_uri", "http://localhost");
               form.setValue("scopes", [{ value: "https://graph.microsoft.com/Mail.ReadWrite" }, { value: "https://graph.microsoft.com/Mail.Send" }, { value: "offline_access" }]);
               form.setValue("extra_params", [{ key: "prompt", value: "consent" }])
             }}
           >
-            Outlook
+            Outlook (Consumer)
+          </Button>
+
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              form.setValue("auth_url", "https://login.microsoftonline.com/common/oauth2/v2.0/authorize");
+              form.setValue("token_url", "https://login.microsoftonline.com/common/oauth2/v2.0/token");
+              form.setValue("enabled", true);
+              form.setValue("grant_type", "ClientCredentials");
+              form.setValue("redirect_uri", "http://localhost");
+              form.setValue("scopes", [{ value: "https://graph.microsoft.com/.default" }]);
+              form.setValue("extra_params", []);
+            }}
+          >
+            Microsoft 365 (Service)
           </Button>
         </div>
         <ScrollArea className='h-[40rem] w-full pr-4 -mr-4 py-1'>
@@ -309,6 +333,32 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
               onSubmit={form.handleSubmit(onSubmit)}
               className='space-y-4 p-0.5'
             >
+              <FormField
+                control={form.control}
+                name='grant_type'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Grant Type:</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select grant type" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="AuthorizationCode">Authorization Code + PKCE (requires user login)</SelectItem>
+                        <SelectItem value="ClientCredentials">Client Credentials (no user interaction, service-to-service)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      {field.value === 'ClientCredentials'
+                        ? 'Uses client_id + client_secret to obtain tokens automatically. Suitable for organizational accounts with Microsoft Graph.'
+                        : 'Uses PKCE flow with user interaction. Suitable for personal accounts (Outlook.com, Hotmail).'}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
               <FormField
                 control={form.control}
                 name='enabled'
@@ -372,25 +422,27 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
                   </FormItem>
                 )}
               />
-              <FormField
-                control={form.control}
-                name='auth_url'
-                render={({ field }) => (
-                  <FormItem className='flex flex-col gap-y-1 space-y-0'>
-                    <FormLabel className='mb-1'>Auth Url:</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder='Enter the authorization URL'
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      The URL where users will be redirected to authorize your application.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              {!isClientCredentials && (
+                <FormField
+                  control={form.control}
+                  name='auth_url'
+                  render={({ field }) => (
+                    <FormItem className='flex flex-col gap-y-1 space-y-0'>
+                      <FormLabel className='mb-1'>Auth Url:</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='Enter the authorization URL'
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        The URL where users will be redirected to authorize your application.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
               <FormField
                 control={form.control}
                 name='token_url'
@@ -404,34 +456,39 @@ export function ActionDialog({ currentRow, open, onOpenChange }: Props) {
                       />
                     </FormControl>
                     <FormDescription>
-                      The URL used to exchange the authorization code for an access token.
+                      The URL used to exchange credentials for an access token.
+                      For Microsoft Graph client credentials, replace <code>YOUR_TENANT_ID</code> with your tenant ID or domain (e.g. <code>yourtenant.onmicrosoft.com</code>):{' '}
+                      <code>https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token</code>
+                      {' '}Multi-tenant apps may use <code>common</code> or <code>organizations</code> instead.
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
-              <FormField
-                control={form.control}
-                name='redirect_uri'
-                render={({ field }) => (
-                  <FormItem className='flex flex-col gap-y-1 space-y-0'>
-                    <FormLabel className='mb-1'>Redirect Url:</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder='Enter your redirect URL'
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      The redirect URL after authorization. It must match the one registered with the OAuth provider.
-                      Use the format <code>http://[host]:[port]/oauth2/callback</code> (or <code>https://</code>),
-                      where <code>[host]</code> and <code>[port]</code> match your RustMailer deployment.
-                      The path <code>/oauth2/callback</code> is fixed.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              {!isClientCredentials && (
+                <FormField
+                  control={form.control}
+                  name='redirect_uri'
+                  render={({ field }) => (
+                    <FormItem className='flex flex-col gap-y-1 space-y-0'>
+                      <FormLabel className='mb-1'>Redirect Url:</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='Enter your redirect URL'
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        The redirect URL after authorization. It must match the one registered with the OAuth provider.
+                        Use the format <code>http://[host]:[port]/oauth2/callback</code> (or <code>https://</code>),
+                        where <code>[host]</code> and <code>[port]</code> match your RustMailer deployment.
+                        The path <code>/oauth2/callback</code> is fixed.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
               <div>
                 {scopes.map((field, index) => (
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center" key={field.id + index}>

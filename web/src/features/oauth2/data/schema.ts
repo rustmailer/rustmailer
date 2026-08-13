@@ -10,6 +10,7 @@ export interface OAuth2Entity {
   extra_params?: Record<string, string>;
   enabled: boolean;
   use_proxy?: number;
+  grant_type: 'AuthorizationCode' | 'ClientCredentials';
   created_at: number;
   updated_at: number;
 }

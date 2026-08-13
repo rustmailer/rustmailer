@@ -4,7 +4,7 @@
 
 use crate::modules::common::auth::ClientContext;
 use crate::modules::error::code::ErrorCode;
-use crate::modules::oauth2::entity::{OAuth2, OAuth2CreateRequest, OAuth2UpdateRequest};
+use crate::modules::oauth2::entity::{OAuth2CreateRequest, OAuth2Model, OAuth2UpdateRequest};
 use crate::modules::oauth2::flow::{AuthorizeUrlRequest, OAuth2Flow};
 use crate::modules::oauth2::token::{ExternalOAuth2Request, OAuth2AccessToken};
 use crate::modules::rest::api::ApiTags;
@@ -12,9 +12,12 @@ use crate::modules::rest::response::DataPage;
 use crate::modules::rest::ApiResult;
 use crate::raise_error;
 use poem::web::Path;
-use poem_openapi::param::Query;
-use poem_openapi::payload::{Json, PlainText};
-use poem_openapi::OpenApi;
+use poem_openapi::{
+    param::Query,
+    payload::{Json, PlainText},
+    Object, OpenApi,
+};
+use serde::{Deserialize, Serialize};
 
 pub struct OAuth2Api;
 
@@ -33,10 +36,10 @@ impl OAuth2Api {
         /// The name of the OAuth2 configuration to retrieve
         id: Path<u64>,
         context: ClientContext,
-    ) -> ApiResult<Json<OAuth2>> {
+    ) -> ApiResult<Json<OAuth2Model>> {
         context.require_root()?;
         let id = id.0;
-        Ok(Json(OAuth2::get(id).await?.ok_or_else(|| {
+        Ok(Json(OAuth2Model::get(id).await?.ok_or_else(|| {
             raise_error!(
                 format!("OAuth2 configuration id='{id}' not found"),
                 ErrorCode::ResourceNotFound
@@ -59,7 +62,7 @@ impl OAuth2Api {
         context: ClientContext,
     ) -> ApiResult<()> {
         context.require_root()?;
-        Ok(OAuth2::delete(id.0).await?)
+        Ok(OAuth2Model::delete(id.0).await?)
     }
 
     /// Creates a new OAuth2 configuration.
@@ -77,7 +80,7 @@ impl OAuth2Api {
         context: ClientContext,
     ) -> ApiResult<()> {
         context.require_root()?;
-        let entity = OAuth2::new(request.0)?;
+        let entity = OAuth2Model::new(request.0)?;
         Ok(entity.save().await?)
     }
 
@@ -98,7 +101,7 @@ impl OAuth2Api {
         context: ClientContext,
     ) -> ApiResult<()> {
         context.require_root()?;
-        Ok(OAuth2::update(id.0, payload.0).await?)
+        Ok(OAuth2Model::update(id.0, payload.0).await?)
     }
 
     /// Lists OAuth2 configurations with pagination and sorting options.
@@ -118,10 +121,10 @@ impl OAuth2Api {
         /// Optional. Whether to sort the list in descending order.
         desc: Query<Option<bool>>,
         context: ClientContext,
-    ) -> ApiResult<Json<DataPage<OAuth2>>> {
+    ) -> ApiResult<Json<DataPage<OAuth2Model>>> {
         context.require_root()?;
         Ok(Json(
-            OAuth2::paginate_list(page.0, page_size.0, desc.0).await?,
+            OAuth2Model::paginate_list(page.0, page_size.0, desc.0).await?,
         ))
     }
 
@@ -202,4 +205,54 @@ impl OAuth2Api {
 
         Ok(())
     }
+
+    /// Exchanges client credentials for an access token.
+    /// Only applicable for OAuth2 configurations with grant_type = CLIENT_CREDENTIALS.
+    #[oai(
+        path = "/oauth2-exchange-client-credentials",
+        method = "post",
+        operation_id = "exchange_client_credentials"
+    )]
+    async fn exchange_client_credentials(
+        &self,
+        request: Json<ExchangeClientCredentialsRequest>,
+        context: ClientContext,
+    ) -> ApiResult<()> {
+        context.require_account_access(request.account_id)?;
+        let flow = OAuth2Flow::new(request.oauth2_id);
+        flow.exchange_client_credentials(request.account_id).await?;
+        Ok(())
+    }
+
+    /// Refreshes the OAuth2 access token for a specified account.
+    /// Uses the refresh token for AuthorizationCode configs, or re-exchanges
+    /// client credentials for ClientCredentials configs.
+    #[oai(
+        path = "/oauth2-tokens/:account_id/refresh",
+        method = "post",
+        operation_id = "refresh_oauth2_token"
+    )]
+    async fn refresh_oauth2_token(
+        &self,
+        account_id: Path<u64>,
+        context: ClientContext,
+    ) -> ApiResult<()> {
+        let account = account_id.0;
+        context.require_account_access(account)?;
+        let token = OAuth2AccessToken::get(account).await?.ok_or_else(|| {
+            raise_error!(
+                "OAuth2 access tokens not found".into(),
+                ErrorCode::ResourceNotFound
+            )
+        })?;
+        let flow = OAuth2Flow::new(token.oauth2_id);
+        flow.refresh_access_token(&token).await?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, Object)]
+pub struct ExchangeClientCredentialsRequest {
+    pub account_id: u64,
+    pub oauth2_id: u64,
 }

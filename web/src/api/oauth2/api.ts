@@ -47,3 +47,16 @@ export const get_oauth2_tokens = async (accountId: number) => {
     const response = await axiosInstance.get<OAuth2Tokens>(`/api/v1/oauth2-tokens/${accountId}`);
     return response.data;
 };
+
+export const exchange_client_credentials = async (accountId: number, oauth2Id: number) => {
+    const response = await axiosInstance.post(`/api/v1/oauth2-exchange-client-credentials`, {
+        account_id: accountId,
+        oauth2_id: oauth2Id
+    });
+    return response.data;
+};
+
+export const refresh_oauth2_token = async (accountId: number) => {
+    const response = await axiosInstance.post(`/api/v1/oauth2-tokens/${accountId}/refresh`);
+    return response.data;
+};
