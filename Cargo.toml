@@ -1,6 +1,6 @@
 [package]
 name = "rustmailer"
-version = "1.6.1"
+version = "1.7.0"
 edition = "2021"
 
 [[bin]]
@@ -19,7 +19,7 @@ opt-level = 3
 codegen-units = 1
 
 [dependencies]
-chrono = "0.4.42"
+chrono = "0.4"
 clap = { version = "4.5.51", features = ["derive", "env"] }
 mimalloc = "0.1.48"
 native_db = "0.8.2"
@@ -44,12 +44,12 @@ poem-grpc = { version = "0.5.9", features = [
 ] }
 min_jwt = { version = "0.10.0", features = ["ring", "serde", "serde_json"] }
 ring = { version = "0.17.14", features = ["std"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-tokio = { version = "1.50.0", features = ["full"] }
-tracing = "0.1.41"
-tracing-appender = "0.2.3"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.53", features = ["full"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 base64 = "0.22.1"
 snafu = "0.8.9"
 reqwest = { version = "0.12.24", default-features = false, features = [
@@ -60,14 +60,14 @@ reqwest = { version = "0.12.24", default-features = false, features = [
     "blocking",
     "socks",
 ] }
-tokio-socks = "0.5.2"
+tokio-socks = "0.5"
 http = "1.3.1"
-regex = "1.12.2"
+regex = "1.13.1"
 email_address = "0.2.9"
-futures = "0.3.31"
+futures = "0.3"
 utf7-imap = "0.3.2"
-imap-proto = "0.16.6"
-mail-parser = { version = '0.11.1', features = ["serde"] }
+imap-proto = "0.16"
+mail-parser = { version = '0.11', features = ["serde"] }
 mail-send = "0.5.2"
 tokio-rustls = { version = "0.26.4", default-features = false, features = [
     "ring",
@@ -80,39 +80,39 @@ oauth2 = { version = "5.0.0", default-features = false, features = [
     "rustls-tls",
     "reqwest-blocking",
 ] }
-url = { version = "2.5.7", features = ["serde"] }
+url = { version = "2.5", features = ["serde"] }
 sysinfo = "0.37.2"
 num_cpus = "1.17.0"
-proc-macro2 = "1.0.103"
+proc-macro2 = "1.0"
 cacache = { version = "13.1.0", default-features = false, features = [
     "tokio-runtime",
     "mmap",
 ] }
 rand = "0.9.2"
 encoding_rs = "0.8.35"
-async-imap = { version = "0.11.1", default-features = false, features = [
+async-imap = { version = "0.11", default-features = false, features = [
     "runtime-tokio",
     "compress",
 ] }
-webpki-roots = "1.0.4"
-rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
+webpki-roots = "1.0"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pki-types = "1.13.0"
 tokio-io-timeout = "1.2.1"
-bb8 = "0.9.0"
+bb8 = "0.9"
 # Note: Keep prost and prost-types at the same version to avoid potential conflicts.
 # Make sure to test thoroughly before upgrading or changing versions.
 prost = "0.14"
 prost-types = "0.14"
-semver = "1.0.27"
-governor = "0.10.1"
+semver = "1.0"
+governor = "0.10"
 async-nats = { version = "0.45.0" }
 lru = "0.16.2"
 mime_guess = "2.0.5"
-pulldown-cmark = "0.13.0"
-html-escape = "0.2.13"
+pulldown-cmark = "0.13"
+html-escape = "0.2"
 hex = "0.4.3"
 scraper = "0.24.0"
-time = { version = "0.3.44", features = [
+time = { version = "0.3", features = [
     "formatting",
     "parsing",
     "local-offset",
@@ -126,10 +126,10 @@ vrl = "0.28.0"
 dashmap = "6.1.0"
 prometheus = "0.14.0"
 # Statically links OpenSSL by compiling from source, avoiding system library dependencies
-openssl-sys = { version = "0.9.110", optional = true, features = ["vendored"] }
-image = "0.25.8"
+openssl-sys = { version = "0.9", optional = true, features = ["vendored"] }
+image = "0.25"
 gethostname = "1.1.0"
-glob = "0.3.3"
+glob = "0.3"
 bytes = "1.10.1"
 [build-dependencies]
 poem-grpc-build = "0.5.7"
