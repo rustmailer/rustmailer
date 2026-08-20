@@ -160,11 +160,7 @@ impl OAuth2Flow {
     pub async fn refresh_access_token(&self, token: &OAuth2AccessToken) -> RustMailerResult<()> {
         let entity = self.fetch_oauth2_entity().await?;
         if !entity.enabled {
-            OAuth2AccessToken::delete_by_oauth2_id(token.oauth2_id).await?;
-            return Err(raise_error!(
-                "OAuth2 authentication is disabled for this client".into(),
-                ErrorCode::OAuth2ItemDisabled
-            ));
+            return Ok(());
         }
         let client = self.build_oauth2_client(&entity)?;
         let http_client = build_http_client(entity.use_proxy).await?;

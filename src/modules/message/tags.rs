@@ -164,7 +164,14 @@ impl BatchTagRequest {
 }
 
 pub async fn tag_messages_impl(account_id: u64, payload: BatchTagRequest) -> RustMailerResult<()> {
-    let account = AccountModel::check_account_active(account_id, false).await?;
+    let account = AccountModel::get(account_id).await?;
+    if !account.enabled {
+        return Err(raise_error!(
+            format!("Account id='{account_id}' is disabled"),
+            ErrorCode::AccountDisabled
+        ));
+    }
+
     let _ = &payload.validate(&account)?;
 
     match account.mailer_type {

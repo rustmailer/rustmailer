@@ -488,7 +488,6 @@ impl AccountV3 {
         let result = list_all_impl(DB_MANAGER.meta_db())
             .await?
             .into_iter()
-            .filter(|a: &AccountModel| a.enabled)
             .map(|account: AccountModel| MinimalAccount {
                 id: account.id,
                 email: account.email,

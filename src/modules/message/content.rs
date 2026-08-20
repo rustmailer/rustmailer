@@ -391,7 +391,14 @@ pub async fn retrieve_email_content(
     request: MessageContentRequest,
     skip_cache: bool,
 ) -> RustMailerResult<FullMessageContent> {
-    let account = AccountModel::check_account_active(account_id, false).await?;
+    let account = AccountModel::get(account_id).await?;
+    if !account.enabled {
+        return Err(raise_error!(
+            format!("Account id='{account_id}' is disabled"),
+            ErrorCode::AccountDisabled
+        ));
+    }
+
     request.validate(&account)?;
 
     match account.mailer_type {

@@ -488,7 +488,14 @@ impl MessageSearchRequest {
         page_size: u64,
         desc: bool,
     ) -> RustMailerResult<CursorDataPage<Envelope>> {
-        let account = AccountModel::check_account_active(account_id, false).await?;
+        let account = AccountModel::get(account_id).await?;
+        if !account.enabled {
+            return Err(raise_error!(
+                format!("Account id='{account_id}' is disabled"),
+                ErrorCode::AccountDisabled
+            ));
+        }
+
         match account.mailer_type {
             MailerType::ImapSmtp => {
                 self.imap_search_impl(&account, next_page_token, page_size, desc)

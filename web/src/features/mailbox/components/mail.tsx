@@ -228,6 +228,9 @@ export function Mail({
             } catch (error) {
                 setIsError(true);
                 setError(error);
+                // Stop retrying: clear the selected mailbox so dependency changes
+                // (page, remote, filter) do not re-trigger this effect in a loop.
+                setSelectedMailbox(undefined);
             } finally {
                 setIsMessagesLoading(false)
             }
@@ -346,10 +349,15 @@ export function Mail({
 
     React.useEffect(() => {
         if (isError && error) {
+            const isDisabled =
+                error?.response?.status === 403 ||
+                error?.message?.includes('disabled');
             toast({
                 variant: "destructive",
-                title: "Failed to load messages",
-                description: error.message || "An unknown error occurred. Please try again.",
+                title: isDisabled ? "Account is disabled" : "Failed to load messages",
+                description: isDisabled
+                    ? "This account is disabled. Only cached messages are available."
+                    : (error.message || "An unknown error occurred. Please try again."),
             });
         }
     }, [isError, error]);

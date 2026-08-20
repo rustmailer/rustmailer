@@ -148,16 +148,6 @@ impl OAuth2AccessToken {
         }).await
     }
 
-    pub async fn delete_by_oauth2_id(oauth2_id: u64) -> RustMailerResult<()> {
-        delete_impl(DB_MANAGER.meta_db(), move |rw|{
-            rw.get().secondary::<OAuth2AccessToken>(OAuth2AccessTokenKey::oauth2_id, oauth2_id)
-            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-            .ok_or_else(|| raise_error!(format!(
-                "The oauth2 access token entity with oauth2_id={oauth2_id} that you want to delete was not found."
-            ),ErrorCode::ResourceNotFound))
-        }).await
-    }
-
     pub async fn set_access_token(
         account_id: u64,
         access_token: String,

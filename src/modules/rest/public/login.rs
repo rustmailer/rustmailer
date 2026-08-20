@@ -12,7 +12,7 @@ use tracing::error;
 /// on successful authentication.
 #[handler]
 pub async fn login(password: String) -> Response {
-    match check_root_password(&password) {
+    match check_root_password(&password).await {
         Ok(root_token) => Response::builder()
             .status(http::StatusCode::OK)
             .content_type("text/plain")

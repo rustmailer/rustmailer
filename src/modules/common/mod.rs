@@ -33,6 +33,7 @@ pub mod signal;
 pub mod timeout;
 pub mod tls;
 pub mod validator;
+pub mod watchdog;
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Object)]
 pub struct Addr {

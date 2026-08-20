@@ -247,21 +247,6 @@ pub async fn async_find_impl<T: ToInput + Clone + Send + 'static>(
     .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
 }
 
-pub fn find_impl<T: ToInput + Clone + Send + 'static>(
-    database: &Arc<Database<'static>>,
-    key: &str,
-) -> RustMailerResult<Option<T>> {
-    let db = database.clone();
-    let r_transaction = db
-        .r_transaction()
-        .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
-    let entity: Option<T> = r_transaction
-        .get()
-        .primary(key)
-        .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
-    Ok(entity)
-}
-
 pub async fn delete_impl<T: ToInput + Clone + Send + 'static>(
     database: &Arc<Database<'static>>,
     delete: impl FnOnce(&RwTransaction) -> RustMailerResult<T> + Send + 'static,

@@ -3,7 +3,7 @@
 // Unauthorized copying, modification, or distribution is prohibited.
 
 use crate::modules::database::manager::DB_MANAGER;
-use crate::modules::database::{find_impl, upsert_impl};
+use crate::modules::database::{async_find_impl, upsert_impl};
 use crate::modules::error::RustMailerResult;
 use crate::utc_now;
 use native_db::*;
@@ -35,16 +35,12 @@ impl SystemSetting {
         upsert_impl(DB_MANAGER.meta_db(), self).await
     }
 
-    pub fn get(key: &str) -> RustMailerResult<Option<SystemSetting>> {
-        find_impl(DB_MANAGER.meta_db(), key)
+    pub async fn get(key: &str) -> RustMailerResult<Option<SystemSetting>> {
+        async_find_impl(DB_MANAGER.meta_db(), key.to_string()).await
     }
 
-    // pub async fn list() -> RustMailerResult<Vec<SystemSetting>> {
-    //     list_all_impl(DB_MANAGER.metadata_db()).await
-    // }
-
-    pub fn get_existing_value(key: &str) -> RustMailerResult<Option<String>> {
-        let setting = Self::get(key)?;
+    pub async fn get_existing_value(key: &str) -> RustMailerResult<Option<String>> {
+        let setting = Self::get(key).await?;
         Ok(setting.map(|s| s.value))
     }
 

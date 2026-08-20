@@ -24,7 +24,7 @@ async fn get_or_generate(
     save_file_name: Option<&str>,
     force: bool,
 ) -> RustMailerResult<String> {
-    if let Some(existing_value) = SystemSetting::get_existing_value(key)? {
+    if let Some(existing_value) = SystemSetting::get_existing_value(key).await? {
         if force {
             // If force is true, write the existing value to the file
             if let Some(filename) = save_file_name {
@@ -77,8 +77,8 @@ async fn save_to_file(content: &str, filename: &str) -> RustMailerResult<()> {
     Ok(())
 }
 
-pub fn check_root_password(password: &str) -> RustMailerResult<String> {
-    let stored_encrypted_password = SystemSetting::get_existing_value(ROOT_PASSWORD)?;
+pub async fn check_root_password(password: &str) -> RustMailerResult<String> {
+    let stored_encrypted_password = SystemSetting::get_existing_value(ROOT_PASSWORD).await?;
     let matched = match stored_encrypted_password {
         Some(ref stored) => {
             let decrypted = decrypt!(stored)?;
@@ -94,12 +94,14 @@ pub fn check_root_password(password: &str) -> RustMailerResult<String> {
         ));
     }
 
-    let root_token = SystemSetting::get_existing_value(ROOT_TOKEN)?.ok_or_else(|| {
-        raise_error!(
-            "Root token not found — this should never happen".into(),
-            ErrorCode::InternalError
-        )
-    })?;
+    let root_token = SystemSetting::get_existing_value(ROOT_TOKEN)
+        .await?
+        .ok_or_else(|| {
+            raise_error!(
+                "Root token not found — this should never happen".into(),
+                ErrorCode::InternalError
+            )
+        })?;
 
     Ok(root_token)
 }

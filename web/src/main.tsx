@@ -41,7 +41,11 @@ const handleAxiosError = (error: any) => {
       }
       break;
     case 403:
-      router.navigate({ to: '/403' });
+      toast({
+        variant: 'destructive',
+        title: 'Access Denied',
+        description: 'You do not have permission to perform this action.',
+      });
       break;
     case 500:
       toast({

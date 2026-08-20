@@ -38,7 +38,7 @@ pub async fn list_messages_in_mailbox(
     remote: bool,
     desc: bool,
 ) -> RustMailerResult<CursorDataPage<Envelope>> {
-    let account = AccountModel::check_account_active(account_id, false).await?;
+    let account = AccountModel::get(account_id).await?;
     if page_size == 0 {
         return Err(raise_error!(
             "page_size must be greater than 0.".into(),
@@ -52,6 +52,14 @@ pub async fn list_messages_in_mailbox(
         ));
     }
     let remote = remote || account.minimal_sync();
+
+    if remote && !account.enabled {
+        return Err(raise_error!(
+            format!("Account id='{account_id}' is disabled"),
+            ErrorCode::AccountDisabled
+        ));
+    }
+
     if remote {
         fetch_remote_messages(&account, mailbox_name, next_page_token, page_size, desc).await
     } else {
@@ -426,7 +434,15 @@ pub async fn list_threads_in_mailbox(
     remote: bool,
     desc: bool,
 ) -> RustMailerResult<CursorDataPage<Envelope>> {
-    let account = AccountModel::check_account_active(account_id, false).await?;
+    let account = AccountModel::get(account_id).await?;
+
+    if remote && !account.enabled {
+        return Err(raise_error!(
+            format!("Account id='{account_id}' is disabled"),
+            ErrorCode::AccountDisabled
+        ));
+    }
+
     if page_size == 0 {
         return Err(raise_error!(
             "page_size must be greater than 0.".into(),
@@ -689,7 +705,14 @@ pub async fn get_thread_messages(
     thread_id: String,
     remote: bool,
 ) -> RustMailerResult<Vec<Envelope>> {
-    let account = AccountModel::check_account_active(account_id, false).await?;
+    let account = AccountModel::get(account_id).await?;
+
+    if remote && !account.enabled {
+        return Err(raise_error!(
+            format!("Account id='{account_id}' is disabled"),
+            ErrorCode::AccountDisabled
+        ));
+    }
 
     match account.mailer_type {
         MailerType::ImapSmtp => {

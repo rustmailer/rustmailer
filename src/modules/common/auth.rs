@@ -164,7 +164,7 @@ pub async fn extract_client_context(req: &Request) -> Result<ClientContext> {
         })?;
 
         // Check for root token
-        if let Ok(Some(root)) = SystemSetting::get(ROOT_TOKEN) {
+        if let Ok(Some(root)) = SystemSetting::get(ROOT_TOKEN).await {
             if root.value == token {
                 return Ok(ClientContext {
                     ip_addr: Some(ip_addr),

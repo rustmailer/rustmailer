@@ -4,7 +4,7 @@
 
 use mimalloc::MiMalloc;
 use modules::{
-    common::rustls::RustMailerTls,
+    common::{rustls::RustMailerTls, watchdog::init_watchdog},
     context::{executors::EmailClientExecutors, Initialize},
     error::{code::ErrorCode, RustMailerResult},
     grpc::server::start_grpc_server,
@@ -47,7 +47,9 @@ async fn main() -> RustMailerResult<()> {
     info!("Git:      [{}]", env!("GIT_HASH"));
     info!("Project:  https://rustmailer.com");
     info!("GitHub:   https://github.com/rustmailer/rustmailer");
-    
+
+    init_watchdog(SETTINGS.rustmailer_watchdog_timeout_secs);
+
     if let Err(error) = initialize().await {
         eprintln!("{:?}", error);
         return Err(error);

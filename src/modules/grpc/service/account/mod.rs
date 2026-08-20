@@ -4,6 +4,7 @@
 
 use crate::modules::account::migration::AccountModel as RustMailerAccount;
 use crate::modules::account::payload::filter_accessible_accounts;
+use crate::modules::account::payload::MinimalAccount;
 use crate::modules::account::payload::AccountCreateRequest as RustMailerAccountCreateRequest;
 use crate::modules::account::payload::AccountUpdateRequest as RustMailerAccountUpdateRequest;
 use crate::modules::account::status::AccountRunningState as RustMailerAccountRunningState;
@@ -169,7 +170,16 @@ impl AccountService for RustMailerAccountService {
         })?;
 
         let accessible_accounts = context.accessible_accounts()?;
-        let minimal_list = RustMailerAccount::minimal_list().await?;
+        let minimal_list: Vec<MinimalAccount> = RustMailerAccount::list_all()
+            .await?
+            .into_iter()
+            .filter(|a| a.enabled)
+            .map(|account| MinimalAccount {
+                id: account.id,
+                email: account.email,
+                mailer_type: account.mailer_type,
+            })
+            .collect();
 
         let result = match accessible_accounts {
             Some(set) => filter_accessible_accounts(&minimal_list, set),

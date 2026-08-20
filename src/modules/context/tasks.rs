@@ -36,10 +36,10 @@ impl RustMailTask for ImapHeartBeatTask {
 }
 
 async fn touch_connection() -> RustMailerResult<()> {
-    let accounts = AccountModel::minimal_list().await?;
+    let accounts = AccountModel::list_all().await?;
     let imap_account_ids: Vec<u64> = accounts
         .into_iter()
-        .filter(|a| matches!(a.mailer_type, MailerType::ImapSmtp))
+        .filter(|a| a.enabled && matches!(a.mailer_type, MailerType::ImapSmtp))
         .map(|a| a.id)
         .collect();
 

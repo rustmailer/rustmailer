@@ -132,11 +132,17 @@ export function MailDisplayDrawer({ open, setOpen, onOpenChange, currentEnvelope
     },
     onError: (error) => {
       setLoading(false)
+      const isDisabled = (error as any)?.response?.status === 403;
       toast({
-        title: 'Failed to load email message.',
-        description: `${error.message}`,
+        title: isDisabled ? 'Account is disabled' : 'Failed to load email message.',
+        description: isDisabled
+          ? 'This account is disabled. Message content is unavailable.'
+          : `${error.message}`,
         variant: 'destructive'
       })
+      if (isDisabled) {
+        setOpen(null);
+      }
     },
   });
 

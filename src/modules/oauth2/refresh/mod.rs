@@ -8,7 +8,7 @@ use crate::modules::oauth2::{flow::OAuth2Flow, token::OAuth2AccessToken};
 use crate::modules::scheduler::periodic::PeriodicTask;
 use crate::utc_now;
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 const TASK_INTERVAL: Duration = Duration::from_secs(60); // Interval set to 1 minute
 const FIFTEEN_MINUTES: Duration = Duration::from_secs(45 * 60);
@@ -49,11 +49,6 @@ impl RustMailTask for OAuth2RefreshTask {
                                         error!(
                                             "Failed to refresh access token for {}: {}",
                                             token.account_id, error
-                                        );
-                                    } else {
-                                        info!(
-                                            "Successfully refreshed access token for {}",
-                                            token.account_id
                                         );
                                     }
                                 });

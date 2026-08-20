@@ -217,6 +217,20 @@ pub struct Settings {
     )]
     pub rustmailer_envelope_cache_size: Option<usize>,
 
+    /// Abort the process when the tokio runtime stops producing heartbeats.
+    ///
+    /// A watchdog thread exits with a non-zero code when no runtime heartbeat is
+    /// observed for this many seconds, letting orchestrators (Docker restart
+    /// policies, supervisors) recover the process from a wedged runtime.
+    /// Set to 0 to disable the watchdog.
+    #[clap(
+        long,
+        env,
+        default_value = "60",
+        help = "Abort the process if the runtime heartbeat is stale for this many seconds (0 disables the watchdog)"
+    )]
+    pub rustmailer_watchdog_timeout_secs: u64,
+
     /// Enables or disables the access token mechanism for HTTP endpoints.
     ///
     /// When set to `true`, HTTP requests will be subject to access token validation.

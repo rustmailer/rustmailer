@@ -23,8 +23,15 @@ pub async fn get_account_mailboxes(
     account_id: u64,
     remote: bool,
 ) -> RustMailerResult<Vec<MailBox>> {
-    let account = AccountModel::check_account_active(account_id, false).await?;
+    let account = AccountModel::get(account_id).await?;
     let remote = remote || account.minimal_sync();
+
+    if remote && !account.enabled {
+        return Err(raise_error!(
+            format!("Account id='{account_id}' is disabled"),
+            ErrorCode::AccountDisabled
+        ));
+    }
 
     match (&account.mailer_type, remote) {
         (MailerType::ImapSmtp, true) => request_imap_all_mailbox_list(account_id).await,
