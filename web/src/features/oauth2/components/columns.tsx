@@ -66,6 +66,29 @@ export const columns: ColumnDef<OAuth2Entity>[] = [
     meta: { className: 'w-8 text-center' },
   },
   {
+    accessorKey: 'grant_type',
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Grant Type' />
+    ),
+    cell: ({ row }) => {
+      const grantType = row.original.grant_type;
+      const label = grantType === 'ClientCredentials' ? 'Client Credentials' : 'Auth Code';
+      return (
+        <span className={cn(
+          'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold',
+          grantType === 'ClientCredentials'
+            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+            : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+        )}>
+          {label}
+        </span>
+      );
+    },
+    meta: { className: 'w-32' },
+    enableHiding: true,
+    enableSorting: false,
+  },
+  {
     accessorKey: 'use_proxy',
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Use Proxy' className='ml-4' />

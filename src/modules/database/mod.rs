@@ -9,7 +9,7 @@ use crate::modules::cache::disk::CacheItem;
 use crate::modules::error::RustMailerResult;
 use crate::modules::hook::entity::EventHooks;
 use crate::modules::license::License;
-use crate::modules::oauth2::entity::OAuth2;
+use crate::modules::oauth2::entity::{OAuth2, OAuth2V2};
 use crate::modules::oauth2::pending::OAuth2PendingEntity;
 use crate::modules::oauth2::token::OAuth2AccessToken;
 use crate::modules::settings::proxy::Proxy;
@@ -65,6 +65,7 @@ impl ModelsAdapter {
         self.register_model::<EmailTemplate>();
         self.register_model::<Mta>();
         self.register_model::<OAuth2>();
+        self.register_model::<OAuth2V2>();
         self.register_model::<OAuth2PendingEntity>();
         self.register_model::<OAuth2AccessToken>();
         self.register_model::<EventHooks>();

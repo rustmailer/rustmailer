@@ -4,9 +4,8 @@
 
 use crate::modules::error::code::ErrorCode;
 use crate::modules::error::RustMailerResult;
-use crate::modules::oauth2::{
-    entity::OAuth2, pending::OAuth2PendingEntity, token::OAuth2AccessToken,
-};
+use crate::modules::oauth2::entity::{OAuth2GrantType, OAuth2Model};
+use crate::modules::oauth2::{pending::OAuth2PendingEntity, token::OAuth2AccessToken};
 use crate::modules::settings::proxy::Proxy;
 use crate::{decrypt, encrypt, raise_error};
 use oauth2::{
@@ -50,7 +49,6 @@ impl OAuth2Flow {
     }
 
     pub async fn authorize_url(&self, account_id: u64) -> RustMailerResult<String> {
-        // Fetch OAuth2 entity or return a custom error if not found
         let entity = self.fetch_oauth2_entity().await?;
 
         if !entity.enabled {
@@ -62,11 +60,9 @@ impl OAuth2Flow {
                 ErrorCode::OAuth2ItemDisabled
             ));
         }
-        // Create and configure the OAuth2 client
+
         let client = self.build_oauth2_client(&entity)?;
-        // Generate PKCE challenge and verifier
         let (pkce_code_challenge, pkce_code_verifier) = PkceCodeChallenge::new_random_sha256();
-        // Build the authorization URL request
 
         let mut request = client
             .authorize_url(CsrfToken::new_random)
@@ -78,22 +74,20 @@ impl OAuth2Flow {
                     .into_iter()
                     .map(Scope::new),
             );
-        // Add extra parameters
+
         if let Some(extra_params) = &entity.extra_params {
             for (name, value) in extra_params {
                 request = request.add_extra_param(name.clone(), value.clone());
             }
         }
-        // Extract authorization URL and CSRF state
+
         let (authorize_url, csrf_state) = request.url();
-        // Save the pending OAuth2 state
         self.save_pending_oauth2_state(
             account_id,
             csrf_state.secret(),
             pkce_code_verifier.secret(),
         )
         .await?;
-        // Return the authorization URL
         Ok(authorize_url.to_string())
     }
 
@@ -132,6 +126,57 @@ impl OAuth2Flow {
         Ok(())
     }
 
+    /// Exchanges client credentials for an access token and stores it.
+    /// Suitable for grant_type = ClientCredentials (e.g. Microsoft Graph v2).
+    pub async fn exchange_client_credentials(&self, account_id: u64) -> RustMailerResult<()> {
+        let entity = self.fetch_oauth2_entity().await?;
+
+        if !matches!(entity.grant_type, OAuth2GrantType::ClientCredentials) {
+            return Err(raise_error!(
+                format!(
+                    "OAuth2 configuration id={} does not use ClientCredentials grant type.",
+                    self.oauth2_id
+                ),
+                ErrorCode::InvalidParameter
+            ));
+        }
+
+        if !entity.enabled {
+            return Err(raise_error!(
+                format!(
+                    "OAuth2 authentication is disabled for this client '{}'.",
+                    self.oauth2_id
+                ),
+                ErrorCode::OAuth2ItemDisabled
+            ));
+        }
+
+        let client = self.build_oauth2_client(&entity)?;
+        let http_client = build_http_client(entity.use_proxy).await?;
+
+        let scopes: Vec<Scope> = entity
+            .scopes
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(Scope::new)
+            .collect();
+
+        let token_response = client
+            .exchange_client_credentials()
+            .add_scopes(scopes)
+            .request_async(&http_client)
+            .await
+            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::HttpResponseError))?;
+
+        let access_token = token_response.access_token().secret().to_owned();
+
+        self.save_oauth2_entity_creds(account_id, access_token)
+            .await?;
+
+        Ok(())
+    }
+
     async fn save_oauth2_entity(
         &self,
         account_id: u64,
@@ -140,6 +185,15 @@ impl OAuth2Flow {
     ) -> RustMailerResult<()> {
         let token =
             OAuth2AccessToken::create(account_id, self.oauth2_id, access_token, refresh_token)?;
+        token.save_or_update().await
+    }
+
+    async fn save_oauth2_entity_creds(
+        &self,
+        account_id: u64,
+        access_token: String,
+    ) -> RustMailerResult<()> {
+        let token = OAuth2AccessToken::create_creds(account_id, self.oauth2_id, access_token)?;
         token.save_or_update().await
     }
 
@@ -162,7 +216,23 @@ impl OAuth2Flow {
         if !entity.enabled {
             return Ok(());
         }
-        let client = self.build_oauth2_client(&entity)?;
+
+        match &entity.grant_type {
+            crate::modules::oauth2::entity::OAuth2GrantType::ClientCredentials => {
+                self.exchange_client_credentials(token.account_id).await
+            }
+            crate::modules::oauth2::entity::OAuth2GrantType::AuthorizationCode => {
+                self.refresh_authorization_code_token(&entity, token).await
+            }
+        }
+    }
+
+    async fn refresh_authorization_code_token(
+        &self,
+        entity: &OAuth2Model,
+        token: &OAuth2AccessToken,
+    ) -> RustMailerResult<()> {
+        let client = self.build_oauth2_client(entity)?;
         let http_client = build_http_client(entity.use_proxy).await?;
 
         let refresh_token = token.refresh_token.clone().ok_or_else(|| {
@@ -177,7 +247,8 @@ impl OAuth2Flow {
             .add_scopes(
                 entity
                     .scopes
-                    .unwrap_or(Vec::new())
+                    .clone()
+                    .unwrap_or_default()
                     .into_iter()
                     .map(Scope::new),
             )
@@ -205,8 +276,8 @@ impl OAuth2Flow {
     }
 
     // Helper function to fetch the OAuth2 entity
-    async fn fetch_oauth2_entity(&self) -> RustMailerResult<OAuth2> {
-        OAuth2::get(self.oauth2_id).await?.ok_or_else(|| {
+    async fn fetch_oauth2_entity(&self) -> RustMailerResult<OAuth2Model> {
+        OAuth2Model::get(self.oauth2_id).await?.ok_or_else(|| {
             raise_error!(
                 format!("OAuth2 entity with id '{}' not found", self.oauth2_id),
                 ErrorCode::ResourceNotFound
@@ -215,15 +286,22 @@ impl OAuth2Flow {
     }
 
     // Helper function to build the OAuth2 client
-    fn build_oauth2_client(&self, entity: &OAuth2) -> RustMailerResult<OAuth2Client> {
+    fn build_oauth2_client(&self, entity: &OAuth2Model) -> RustMailerResult<OAuth2Client> {
         let auth_url = AuthUrl::new(entity.auth_url.clone())
             .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InvalidParameter))?;
         let token_url = TokenUrl::new(entity.token_url.clone())
             .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InvalidParameter))?;
-        let redirect_uri = RedirectUrl::new(entity.redirect_uri.clone())
+
+        // Client credentials flow does not use a redirect URI; `oauth2` crate still
+        // requires one on the client builder, so use a placeholder that is never sent.
+        let redirect_uri_str = if entity.redirect_uri.trim().is_empty() {
+            "http://localhost/oauth2/callback"
+        } else {
+            entity.redirect_uri.as_str()
+        };
+        let redirect_uri = RedirectUrl::new(redirect_uri_str.to_owned())
             .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InvalidParameter))?;
 
-        // Create and return the OAuth2 client
         let client = BasicClient::new(ClientId::new(entity.client_id.clone()))
             .set_client_secret(ClientSecret::new(decrypt!(&entity.client_secret)?))
             .set_auth_uri(auth_url)

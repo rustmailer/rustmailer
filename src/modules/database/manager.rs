@@ -7,6 +7,7 @@ use crate::modules::cache::imap::migration::EmailEnvelopeV3;
 use crate::modules::cache::imap::ENVELOPE_MODELS;
 use crate::modules::context::Initialize;
 use crate::modules::error::{code::ErrorCode, RustMailerError};
+use crate::modules::oauth2::entity::OAuth2Model;
 use crate::modules::scheduler::nativedb::TaskMetaEntity;
 use crate::modules::settings::cli::SETTINGS;
 use crate::modules::settings::dir::{DATA_DIR_MANAGER, META_FILE, TASK_FILE};
@@ -18,8 +19,6 @@ use native_db::{Builder, Database};
 use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 
-pub static DB_MANAGER: LazyLock<DatabaseManager> = LazyLock::new(DatabaseManager::new);
-
 use crate::modules::{
     account::status::AccountRunningState,
     autoconfig::CachedMailSettings,
@@ -27,12 +26,14 @@ use crate::modules::{
     database::{batch_insert_impl, list_all_impl},
     hook::entity::EventHooks,
     license::License,
-    oauth2::{entity::OAuth2, pending::OAuth2PendingEntity, token::OAuth2AccessToken},
+    oauth2::{pending::OAuth2PendingEntity, token::OAuth2AccessToken},
     overview::metrics::DailyMetrics,
     settings::{proxy::Proxy, system::SystemSetting},
     smtp::{mta::entity::Mta, template::entity::EmailTemplate},
     token::AccessToken,
 };
+
+pub static DB_MANAGER: LazyLock<DatabaseManager> = LazyLock::new(DatabaseManager::new);
 
 /// Metadata database instance
 pub struct DatabaseManager {
@@ -92,6 +93,8 @@ impl DatabaseManager {
             .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
         rw.migrate::<AccountModel>()
             .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
+        rw.migrate::<OAuth2Model>()
+            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
         rw.commit()
             .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
 
@@ -140,7 +143,7 @@ impl DatabaseManager {
         spawn_migration_task!(AccountModel);
         spawn_migration_task!(EmailTemplate);
         spawn_migration_task!(Mta);
-        spawn_migration_task!(OAuth2);
+        spawn_migration_task!(OAuth2Model);
         spawn_migration_task!(OAuth2PendingEntity);
         spawn_migration_task!(OAuth2AccessToken);
         spawn_migration_task!(EventHooks);
