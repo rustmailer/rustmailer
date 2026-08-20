@@ -3,13 +3,29 @@
 // Unauthorized copying, modification, or distribution is prohibited.
 
 use crate::modules::{
-    grpc::service::rustmailer_grpc::{self, PagedOAuth2},
+    grpc::service::rustmailer_grpc::{
+        self, ClientCredentialsRequest, OAuth2GrantType as GrpcOAuth2GrantType, PagedOAuth2,
+    },
     oauth2::{
-        entity::{OAuth2, OAuth2CreateRequest, OAuth2UpdateRequest},
+        entity::{OAuth2CreateRequest, OAuth2GrantType, OAuth2Model, OAuth2UpdateRequest},
         token::{ExternalOAuth2Request, OAuth2AccessToken},
     },
     rest::response::DataPage,
 };
+
+fn grpc_grant_type_to_domain(v: i32) -> OAuth2GrantType {
+    match GrpcOAuth2GrantType::try_from(v) {
+        Ok(GrpcOAuth2GrantType::ClientCredentials) => OAuth2GrantType::ClientCredentials,
+        _ => OAuth2GrantType::AuthorizationCode,
+    }
+}
+
+fn grpc_grant_type_to_optional(v: Option<i32>) -> Option<OAuth2GrantType> {
+    match v {
+        Some(code) => Some(grpc_grant_type_to_domain(code)),
+        None => None,
+    }
+}
 
 impl From<rustmailer_grpc::OAuth2CreateRequest> for OAuth2CreateRequest {
     fn from(value: rustmailer_grpc::OAuth2CreateRequest) -> Self {
@@ -25,11 +41,11 @@ impl From<rustmailer_grpc::OAuth2CreateRequest> for OAuth2CreateRequest {
                 .then(|| value.extra_params.into_iter().collect()),
             enabled: value.enabled,
             use_proxy: value.use_proxy,
+            grant_type: grpc_grant_type_to_domain(value.grant_type),
         }
     }
 }
 
-// 2. From RustMailerOAuth2 to OAuth2 (gRPC)
 impl From<rustmailer_grpc::UpdateOAuth2Request> for OAuth2UpdateRequest {
     fn from(value: rustmailer_grpc::UpdateOAuth2Request) -> Self {
         Self {
@@ -44,13 +60,13 @@ impl From<rustmailer_grpc::UpdateOAuth2Request> for OAuth2UpdateRequest {
                 .then(|| value.extra_params.into_iter().collect()),
             enabled: value.enabled,
             use_proxy: value.use_proxy,
+            grant_type: grpc_grant_type_to_optional(value.grant_type),
         }
     }
 }
 
-// 3. From UpdateOAuth2Request (gRPC) to OAuth2UpdateRequestDomain
-impl From<OAuth2> for rustmailer_grpc::OAuth2 {
-    fn from(value: OAuth2) -> Self {
+impl From<OAuth2Model> for rustmailer_grpc::OAuth2 {
+    fn from(value: OAuth2Model) -> Self {
         Self {
             id: value.id,
             description: value.description,
@@ -68,12 +84,16 @@ impl From<OAuth2> for rustmailer_grpc::OAuth2 {
             use_proxy: value.use_proxy,
             created_at: value.created_at,
             updated_at: value.updated_at,
+            grant_type: match value.grant_type {
+                OAuth2GrantType::ClientCredentials => GrpcOAuth2GrantType::ClientCredentials as i32,
+                _ => GrpcOAuth2GrantType::AuthorizationCode as i32,
+            },
         }
     }
 }
 
-impl From<DataPage<OAuth2>> for PagedOAuth2 {
-    fn from(value: DataPage<OAuth2>) -> Self {
+impl From<DataPage<OAuth2Model>> for PagedOAuth2 {
+    fn from(value: DataPage<OAuth2Model>) -> Self {
         Self {
             current_page: value.current_page,
             page_size: value.page_size,
@@ -96,6 +116,7 @@ impl From<OAuth2AccessToken> for rustmailer_grpc::OAuth2AccessToken {
         }
     }
 }
+
 impl From<rustmailer_grpc::ExternalOAuth2Request> for ExternalOAuth2Request {
     fn from(value: rustmailer_grpc::ExternalOAuth2Request) -> Self {
         Self {
@@ -103,5 +124,11 @@ impl From<rustmailer_grpc::ExternalOAuth2Request> for ExternalOAuth2Request {
             access_token: value.access_token,
             refresh_token: value.refresh_token,
         }
+    }
+}
+
+impl From<ClientCredentialsRequest> for (u64, u64) {
+    fn from(value: ClientCredentialsRequest) -> Self {
+        (value.account_id, value.oauth2_id)
     }
 }

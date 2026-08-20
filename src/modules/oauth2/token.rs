@@ -10,7 +10,7 @@ use crate::{
             update_impl, upsert_impl,
         },
         error::{code::ErrorCode, RustMailerResult},
-        oauth2::entity::OAuth2,
+        oauth2::entity::OAuth2Model,
     },
     raise_error, utc_now,
 };
@@ -53,6 +53,21 @@ impl OAuth2AccessToken {
             oauth2_id,
             access_token: Some(encrypt!(&access_token)?),
             refresh_token: Some(encrypt!(&refresh_token)?),
+            created_at: utc_now!(),
+            updated_at: utc_now!(),
+        })
+    }
+
+    pub fn create_creds(
+        account_id: u64,
+        oauth2_id: u64,
+        access_token: String,
+    ) -> RustMailerResult<Self> {
+        Ok(Self {
+            account_id,
+            oauth2_id,
+            access_token: Some(encrypt!(&access_token)?),
+            refresh_token: None,
             created_at: utc_now!(),
             updated_at: utc_now!(),
         })
@@ -215,7 +230,7 @@ impl ExternalOAuth2Request {
 
         // Validate that oauth2_id exists in the database if provided
         if let Some(oauth2_id) = self.oauth2_id {
-            let oauth2 = OAuth2::get(oauth2_id).await?;
+            let oauth2 = OAuth2Model::get(oauth2_id).await?;
             if oauth2.is_none() {
                 return Err(raise_error!(
                     format!("OAuth2 configuration with id {} does not exist", oauth2_id),

@@ -5,12 +5,12 @@
 use crate::modules::error::code::ErrorCode;
 use crate::modules::grpc::auth::{require_account_access, require_root};
 use crate::modules::grpc::service::rustmailer_grpc::{
-    AuthorizeUrlRequest, AuthorizeUrlResponse, DeleteOAuth2Request, Empty, ExternalOAuth2Request,
-    GetOAuth2Request, GetOAuth2TokensRequest, ListOAuth2Request, OAuth2, OAuth2AccessToken,
-    OAuth2CreateRequest, OAuth2Service, PagedOAuth2, UpdateOAuth2Request,
+    ClientCredentialsRequest, DeleteOAuth2Request, Empty, ExternalOAuth2Request, GetOAuth2Request,
+    GetOAuth2TokensRequest, ListOAuth2Request, OAuth2, OAuth2AccessToken, OAuth2CreateRequest,
+    OAuth2Service, PagedOAuth2, UpdateOAuth2Request,
 };
 use crate::modules::oauth2::{
-    entity::OAuth2 as RustMailerOAuth2, flow::OAuth2Flow,
+    entity::OAuth2Model as RustMailerOAuth2, flow::OAuth2Flow,
     token::OAuth2AccessToken as RustMailerOAuth2AccessToken,
 };
 use crate::raise_error;
@@ -75,12 +75,14 @@ impl OAuth2Service for RustMailerOAuth2Service {
 
     async fn create_authorize_url(
         &self,
-        request: Request<AuthorizeUrlRequest>,
-    ) -> Result<Response<AuthorizeUrlResponse>, Status> {
+        request: Request<crate::modules::grpc::service::rustmailer_grpc::AuthorizeUrlRequest>,
+    ) -> Result<Response<crate::modules::grpc::service::rustmailer_grpc::AuthorizeUrlResponse>, Status> {
         let req = require_root(request)?;
         let flow = OAuth2Flow::new(req.oauth2_id);
         let url = flow.authorize_url(req.account_id).await?;
-        Ok(Response::new(AuthorizeUrlResponse { url }))
+        Ok(Response::new(crate::modules::grpc::service::rustmailer_grpc::AuthorizeUrlResponse {
+            url,
+        }))
     }
 
     async fn get_o_auth2_tokens(
@@ -97,6 +99,17 @@ impl OAuth2Service for RustMailerOAuth2Service {
                 )
             })?;
         Ok(Response::new(result.into()))
+    }
+
+    async fn exchange_client_credentials(
+        &self,
+        request: Request<ClientCredentialsRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let req = require_account_access(request, |r| r.account_id)?;
+        let (account_id, oauth2_id) = req.into();
+        let flow = OAuth2Flow::new(oauth2_id);
+        flow.exchange_client_credentials(account_id).await?;
+        Ok(Response::new(Empty::default()))
     }
 
     async fn upsert_external_o_auth2_token(

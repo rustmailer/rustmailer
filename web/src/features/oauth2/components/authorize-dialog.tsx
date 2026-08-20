@@ -20,10 +20,11 @@ import { useState } from 'react'
 import { VirtualizedSelect } from '@/components/virtualized-select'
 import useMinimalAccountList from '@/hooks/use-minimal-account-list'
 import { useMutation } from '@tanstack/react-query'
-import { get_authorize_url } from '@/api/oauth2/api'
+import { exchange_client_credentials, get_authorize_url } from '@/api/oauth2/api'
 import { toast } from '@/hooks/use-toast'
 import { ToastAction } from '@/components/ui/toast'
 import { AxiosError } from 'axios'
+import { Loader2 } from 'lucide-react'
 
 interface Props {
   currentRow: OAuth2Entity
@@ -37,18 +38,28 @@ export function AuthorizeDialog({ currentRow, open, onOpenChange }: Props) {
   const [accountId, setAccountId] = useState<number | null>(null)
   const { accountsOptions, minimalList, isLoading } = useMinimalAccountList();
 
+  const isClientCredentials = currentRow.grant_type === 'ClientCredentials'
 
   const authorizeMutation = useMutation({
-    mutationFn: () => get_authorize_url({ account_id: accountId, oauth2_id: currentRow.id }),
-    onSuccess: handleSuccess,
+    mutationFn: () =>
+      isClientCredentials
+        ? exchange_client_credentials(accountId!, currentRow.id)
+        : get_authorize_url({ account_id: accountId, oauth2_id: currentRow.id }),
+    onSuccess: (url: any) => {
+      if (isClientCredentials) {
+        toast({
+          title: 'Access Token Acquired',
+          description: 'Client credentials exchanged successfully. The access token has been stored.',
+          action: <ToastAction altText="Close">Close</ToastAction>,
+        });
+      } else if (typeof url === 'string' && url) {
+        window.open(url, '_blank');
+      }
+      onOpenChange(false);
+    },
     onError: handleError
   });
 
-
-  function handleSuccess(url: string) {
-    window.open(url, '_blank');
-    onOpenChange(false);
-  }
   function handleError(error: AxiosError) {
     const errorMessage = (error.response?.data as { message?: string })?.message ||
       error.message ||
@@ -56,7 +67,7 @@ export function AuthorizeDialog({ currentRow, open, onOpenChange }: Props) {
 
     toast({
       variant: "destructive",
-      title: 'Get Authorize Url Failed',
+      title: isClientCredentials ? 'Client Credentials Exchange Failed' : 'Get Authorize Url Failed',
       description: errorMessage as string,
       action: <ToastAction altText="Try again">Try again</ToastAction>,
     });
@@ -77,9 +88,11 @@ export function AuthorizeDialog({ currentRow, open, onOpenChange }: Props) {
     >
       <DialogContent className='sm:max-w-lg' autoFocus>
         <DialogHeader className='text-left'>
-          <DialogTitle>Authorize Email Account</DialogTitle>
+          <DialogTitle>{isClientCredentials ? 'Exchange Client Credentials' : 'Authorize Email Account'}</DialogTitle>
           <DialogDescription>
-            Authorize an email account to start the OAuth2 authorization process.
+            {isClientCredentials
+              ? 'Exchange client credentials to obtain an access token for the selected account. No user interaction is required.'
+              : 'Authorize an email account to start the OAuth2 authorization process.'}
           </DialogDescription>
         </DialogHeader>
         <div className='flex flex-col space-y-4 h-24'>
@@ -112,7 +125,12 @@ export function AuthorizeDialog({ currentRow, open, onOpenChange }: Props) {
           <DialogClose asChild>
             <Button variant='outline' className="px-2 py-1 text-sm h-auto">Close</Button>
           </DialogClose>
-          {!isLoading && minimalList && minimalList.length > 0 && <Button disabled={!accountId} onClick={doAuthorize}>Authorize</Button>}
+          {!isLoading && minimalList && minimalList.length > 0 && (
+            <Button disabled={!accountId || authorizeMutation.isPending} onClick={doAuthorize}>
+              {authorizeMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isClientCredentials ? 'Exchange' : 'Authorize'}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
