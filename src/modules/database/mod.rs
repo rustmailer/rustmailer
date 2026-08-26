@@ -29,6 +29,9 @@ use transaction::RwTransaction;
 use super::error::code::ErrorCode;
 pub mod backup;
 pub mod manager;
+#[allow(dead_code)] // synchronous helpers kept for direct callers / tests; cleanup uses the queue
+pub mod safe_delete;
+pub use safe_delete::enqueue_delete_secondary_impl;
 pub mod snapshot;
 #[cfg(test)]
 mod tests;

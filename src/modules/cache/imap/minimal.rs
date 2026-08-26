@@ -2,7 +2,7 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{collections::HashSet, sync::Arc};
 
 use native_db::*;
 use native_model::{native_model, Model};
@@ -13,8 +13,8 @@ use crate::{
     modules::{
         cache::imap::{manager::EnvelopeFlagsManager, migration::EmailEnvelopeV3},
         database::{
-            batch_delete_impl, batch_insert_impl, filter_by_secondary_key_impl,
-            manager::DB_MANAGER, update_impl,
+            batch_insert_impl, enqueue_delete_secondary_impl, filter_by_secondary_key_impl,
+            manager::DB_MANAGER, safe_delete::RowFilter, update_impl,
         },
         error::{code::ErrorCode, RustMailerResult},
         utils::envelope_hash,
@@ -68,37 +68,24 @@ impl MinimalEnvelope {
     }
 
     pub async fn clean_mailbox_envelopes(account_id: u64, mailbox_id: u64) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        let mut total_deleted = 0usize;
-        let start_time = Instant::now();
-        loop {
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<MinimalEnvelope> = rw
-                    .scan()
-                    .secondary(MinimalEnvelopeKey::mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .filter_map(Result::ok) // filter only Ok values
-                    .filter(|e: &MinimalEnvelope| e.account_id == account_id)
-                    .take(BATCH_SIZE)
-                    .collect();
-                Ok(to_delete)
-            })
-            .await?;
-            total_deleted += deleted;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
-            }
-        }
+        const BATCH_SIZE: usize = 50;
+        let filter: RowFilter<MinimalEnvelope> =
+            Arc::new(move |e: &MinimalEnvelope| e.account_id == account_id);
+        enqueue_delete_secondary_impl(
+            DB_MANAGER.envelope_db(),
+            MinimalEnvelopeKey::mailbox_id,
+            mailbox_id,
+            filter,
+            BATCH_SIZE,
+            format!(
+                "MinimalEnvelope::clean_mailbox_envelopes account_id={} mailbox_id={}",
+                account_id, mailbox_id
+            ),
+        )?;
 
         info!(
-            "Finished deleting envelopes for mailbox_id={} account_id={} total_deleted={} in {:?}",
-            mailbox_id,
-            account_id,
-            total_deleted,
-            start_time.elapsed()
+            "Enqueued deletion of envelopes for mailbox_id={} account_id={}",
+            mailbox_id, account_id
         );
         Ok(())
     }
@@ -108,41 +95,27 @@ impl MinimalEnvelope {
         mailbox_id: u64,
         to_delete_uid: &[u32],
     ) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        let mut total_deleted = 0usize;
-        let start_time = Instant::now();
+        const BATCH_SIZE: usize = 50;
         let to_delete_set: HashSet<u32> = to_delete_uid.iter().copied().collect();
         let to_delete_set = Arc::new(to_delete_set);
-        loop {
-            let to_delete_set = to_delete_set.clone();
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<MinimalEnvelope> = rw
-                    .scan()
-                    .secondary(MinimalEnvelopeKey::mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .filter_map(Result::ok)
-                    .filter(|e: &MinimalEnvelope| {
-                        e.account_id == account_id && to_delete_set.contains(&e.uid)
-                    })
-                    .take(BATCH_SIZE)
-                    .collect();
-                Ok(to_delete)
-            })
-            .await?;
-            total_deleted += deleted;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
-            }
-        }
+        let filter: RowFilter<MinimalEnvelope> = Arc::new(move |e: &MinimalEnvelope| {
+            e.account_id == account_id && to_delete_set.contains(&e.uid)
+        });
+        enqueue_delete_secondary_impl(
+            DB_MANAGER.envelope_db(),
+            MinimalEnvelopeKey::mailbox_id,
+            mailbox_id,
+            filter,
+            BATCH_SIZE,
+            format!(
+                "MinimalEnvelope::clean_envelopes account_id={} mailbox_id={}",
+                account_id, mailbox_id
+            ),
+        )?;
 
         info!(
-            "Finished deleting minimal envelopes for account_id={} total_deleted={} in {:?}",
-            account_id,
-            total_deleted,
-            start_time.elapsed()
+            "Enqueued deletion of minimal envelopes for account_id={} mailbox_id={}",
+            account_id, mailbox_id
         );
         Ok(())
     }
@@ -186,35 +159,20 @@ impl MinimalEnvelope {
     }
 
     pub async fn clean_account(account_id: u64) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        let mut total_deleted = 0usize;
-        let start_time = Instant::now();
-        loop {
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<MinimalEnvelope> = rw
-                    .scan()
-                    .secondary(MinimalEnvelopeKey::account_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(account_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .filter_map(Result::ok) // filter only Ok values
-                    .take(BATCH_SIZE)
-                    .collect();
-                Ok(to_delete)
-            })
-            .await?;
-            total_deleted += deleted;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
-            }
-        }
+        const BATCH_SIZE: usize = 50;
+        let filter: RowFilter<MinimalEnvelope> = Arc::new(|_: &MinimalEnvelope| true);
+        enqueue_delete_secondary_impl(
+            DB_MANAGER.envelope_db(),
+            MinimalEnvelopeKey::account_id,
+            account_id,
+            filter,
+            BATCH_SIZE,
+            format!("MinimalEnvelope::clean_account account_id={}", account_id),
+        )?;
 
         info!(
-            "Finished deleting envelopes for account_id={} total_deleted={} in {:?}",
-            account_id,
-            total_deleted,
-            start_time.elapsed()
+            "Enqueued deletion of envelopes for account_id={}",
+            account_id
         );
         Ok(())
     }

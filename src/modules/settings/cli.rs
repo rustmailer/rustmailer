@@ -486,6 +486,7 @@ impl Settings {
             rustmailer_metadata_snapshot_interval_secs: 900,
             rustmailer_oauth2_success_redirect: None,
             rustmailer_sync_concurrency: Some(5),
+            rustmailer_watchdog_timeout_secs: 0,
         }
     }
 }

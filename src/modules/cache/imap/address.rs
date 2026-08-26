@@ -2,7 +2,7 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{collections::HashSet, sync::Arc};
 
 use native_db::*;
 use native_model::{native_model, Model};
@@ -19,11 +19,13 @@ use crate::{
                 gmail::sync::envelope::GmailEnvelope, outlook::sync::envelope::OutlookEnvelope,
             },
         },
-        database::{batch_delete_impl, filter_by_secondary_key_impl, manager::DB_MANAGER},
-        error::{code::ErrorCode, RustMailerResult},
+        database::{
+            enqueue_delete_secondary_impl, filter_by_secondary_key_impl, manager::DB_MANAGER,
+            safe_delete::RowFilter,
+        },
+        error::RustMailerResult,
         utils::envelope_hash,
     },
-    raise_error,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize, Object)]
@@ -77,35 +79,20 @@ impl AddressEntity {
     }
 
     pub async fn clean_account(account_id: u64) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        let mut total_deleted = 0usize;
-        let start_time = Instant::now();
-        loop {
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<AddressEntity> = rw
-                    .scan()
-                    .secondary(AddressEntityKey::account_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(account_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .filter_map(Result::ok) // filter only Ok values
-                    .take(BATCH_SIZE)
-                    .collect();
-                Ok(to_delete)
-            })
-            .await?;
-            total_deleted += deleted;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
-            }
-        }
+        const BATCH_SIZE: usize = 50;
+        let filter: RowFilter<AddressEntity> = Arc::new(|_: &AddressEntity| true);
+        enqueue_delete_secondary_impl(
+            DB_MANAGER.envelope_db(),
+            AddressEntityKey::account_id,
+            account_id,
+            filter,
+            BATCH_SIZE,
+            format!("AddressEntity::clean_account account_id={}", account_id),
+        )?;
 
         info!(
-            "Finished deleting address entities for account_id={} total_deleted={} in {:?}",
-            account_id,
-            total_deleted,
-            start_time.elapsed()
+            "Enqueued deletion of address entities for account_id={}",
+            account_id
         );
         Ok(())
     }
@@ -115,9 +102,7 @@ impl AddressEntity {
         mailbox_id: u64,
         to_delete_uid: &[u32],
     ) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        let mut total_deleted = 0usize;
-        let start_time = Instant::now();
+        const BATCH_SIZE: usize = 50;
 
         let to_delete_set: HashSet<u64> = to_delete_uid
             .iter()
@@ -125,73 +110,47 @@ impl AddressEntity {
             .collect();
 
         let to_delete_set = Arc::new(to_delete_set);
-        loop {
-            let to_delete_set = to_delete_set.clone();
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<AddressEntity> = rw
-                    .scan()
-                    .secondary(AddressEntityKey::mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .filter_map(Result::ok) // filter only Ok values
-                    .filter(|e: &AddressEntity| {
-                        e.account_id == account_id && to_delete_set.contains(&e.envelope_hash)
-                    })
-                    .take(BATCH_SIZE)
-                    .collect();
-                Ok(to_delete)
-            })
-            .await?;
-            total_deleted += deleted;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
-            }
-        }
+        let filter: RowFilter<AddressEntity> = Arc::new(move |e: &AddressEntity| {
+            e.account_id == account_id && to_delete_set.contains(&e.envelope_hash)
+        });
+        enqueue_delete_secondary_impl(
+            DB_MANAGER.envelope_db(),
+            AddressEntityKey::mailbox_id,
+            mailbox_id,
+            filter,
+            BATCH_SIZE,
+            format!(
+                "AddressEntity::clean_envelopes account_id={} mailbox_id={}",
+                account_id, mailbox_id
+            ),
+        )?;
 
         info!(
-            "Finished deleting address entities for mailbox_id={} account_id={} total_deleted={} in {:?}",
-            mailbox_id,
-            account_id,
-            total_deleted,
-            start_time.elapsed()
+            "Enqueued deletion of address entities for mailbox_id={} account_id={}",
+            mailbox_id, account_id
         );
         Ok(())
     }
 
     pub async fn clean_mailbox_envelopes(account_id: u64, mailbox_id: u64) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 200;
-        let mut total_deleted = 0usize;
-        let start_time = Instant::now();
-        loop {
-            let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
-                let to_delete: Vec<AddressEntity> = rw
-                    .scan()
-                    .secondary(AddressEntityKey::mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .start_with(mailbox_id)
-                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-                    .filter_map(Result::ok) // filter only Ok values
-                    .filter(|e: &AddressEntity| e.account_id == account_id)
-                    .take(BATCH_SIZE)
-                    .collect();
-                Ok(to_delete)
-            })
-            .await?;
-            total_deleted += deleted;
-            // If this batch is empty, break the loop
-            if deleted == 0 {
-                break;
-            }
-        }
+        const BATCH_SIZE: usize = 50;
+        let filter: RowFilter<AddressEntity> =
+            Arc::new(move |e: &AddressEntity| e.account_id == account_id);
+        enqueue_delete_secondary_impl(
+            DB_MANAGER.envelope_db(),
+            AddressEntityKey::mailbox_id,
+            mailbox_id,
+            filter,
+            BATCH_SIZE,
+            format!(
+                "AddressEntity::clean_mailbox_envelopes account_id={} mailbox_id={}",
+                account_id, mailbox_id
+            ),
+        )?;
 
         info!(
-            "Finished deleting address entities for mailbox_id={} account_id={} total_deleted={} in {:?}",
-            mailbox_id,
-            account_id,
-            total_deleted,
-            start_time.elapsed()
+            "Enqueued deletion of address entities for mailbox_id={} account_id={}",
+            mailbox_id, account_id
         );
         Ok(())
     }
