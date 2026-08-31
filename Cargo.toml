@@ -1,6 +1,6 @@
 [package]
 name = "rustmailer"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 
 [[bin]]
