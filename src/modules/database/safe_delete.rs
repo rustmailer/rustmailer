@@ -293,6 +293,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::database::batch_delete_impl;
     use itertools::Itertools;
     use native_model::{native_model, Model};
     use serde::{Deserialize, Serialize};
@@ -578,6 +579,163 @@ mod tests {
         for row in snapshot(&db) {
             assert_eq!(row.account_id, 2);
         }
+    }
+
+    /// Production point-lookup delete (the stale-envelope cleanup fix): one bounded
+    /// write tx, one lookup per UID, no full mailbox scan. Each entity type must
+    /// remove exactly the target rows and leave everything else untouched.
+    #[tokio::test]
+    async fn point_lookup_delete_only_removes_target_rows() {
+        let db = new_bench_db();
+        seed_minimal(&db);
+        seed_address(&db);
+        seed_thread(&db);
+        seed_envelope_v3(&db);
+
+        let uids: Vec<u32> = vec![3, 17, 99];
+        let addr_hash = |uid: u32| (uid as u64).wrapping_mul(0x9E3779B97F4A7C15);
+
+        // One envelope can produce several AddressEntity rows (to/cc/...): all rows
+        // sharing the envelope_hash must go, not just one.
+        let extra = [
+            BenchAddress {
+                id: 9_000_001,
+                account_id: BN_ACCT,
+                mailbox_id: BN_MB,
+                envelope_hash: addr_hash(3),
+                note: "extra-1".into(),
+            },
+            BenchAddress {
+                id: 9_000_002,
+                account_id: BN_ACCT,
+                mailbox_id: BN_MB,
+                envelope_hash: addr_hash(3),
+                note: "extra-2".into(),
+            },
+        ];
+        let rw = db.rw_transaction().unwrap();
+        for row in extra.iter().cloned() {
+            rw.insert(row).unwrap();
+        }
+        rw.commit().unwrap();
+
+        // MinimalEnvelope: u64 primary key IS envelope_hash.
+        let hashes: Vec<u64> = uids
+            .iter()
+            .map(|uid| BenchMinimal {
+                account_id: BN_ACCT,
+                mailbox_id: BN_MB,
+                uid: *uid,
+                flags_hash: 0,
+            }
+            .pk())
+            .collect();
+        let deleted = batch_delete_impl(&db, move |rw| {
+            let mut to_delete = Vec::with_capacity(hashes.len());
+            for hash in hashes {
+                if let Some(e) = rw
+                    .get()
+                    .primary::<BenchMinimal>(hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                {
+                    to_delete.push(e);
+                }
+            }
+            Ok(to_delete)
+        })
+        .await
+        .unwrap();
+        assert_eq!(deleted, uids.len());
+
+        // AddressEntity: non-unique envelope_hash point scan.
+        let hashes: Vec<u64> = uids.iter().map(|uid| addr_hash(*uid)).collect();
+        let deleted = batch_delete_impl(&db, move |rw| {
+            let mut to_delete = Vec::new();
+            for hash in hashes {
+                let rows: Vec<BenchAddress> = rw
+                    .scan()
+                    .secondary(BenchAddressKey::envelope_hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                    .start_with(hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                    .filter_map(Result::ok)
+                    .collect();
+                to_delete.extend(rows);
+            }
+            Ok(to_delete)
+        })
+        .await
+        .unwrap();
+        // 3 envelopes + 2 extra AddressEntity rows that share uid-3's hash.
+        assert_eq!(deleted, uids.len() + 2);
+
+        // EmailThread: unique envelope_id secondary lookup.
+        let hashes: Vec<u64> = uids.iter().map(|uid| *uid as u64).collect();
+        let deleted = batch_delete_impl(&db, move |rw| {
+            let mut to_delete = Vec::with_capacity(hashes.len());
+            for hash in hashes {
+                if let Some(t) = rw
+                    .get()
+                    .secondary::<BenchThread>(BenchThreadKey::envelope_id, hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                {
+                    to_delete.push(t);
+                }
+            }
+            Ok(to_delete)
+        })
+        .await
+        .unwrap();
+        assert_eq!(deleted, uids.len());
+
+        // EmailEnvelopeV3: unique create_envelope_id secondary lookup.
+        let hashes: Vec<u64> = uids.iter().map(|uid| addr_hash(*uid)).collect();
+        let deleted = batch_delete_impl(&db, move |rw| {
+            let mut to_delete = Vec::with_capacity(hashes.len());
+            for hash in hashes {
+                if let Some(e) = rw
+                    .get()
+                    .secondary::<BenchEnvelopeV3>(BenchEnvelopeV3Key::create_envelope_id, hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                {
+                    to_delete.push(e);
+                }
+            }
+            Ok(to_delete)
+        })
+        .await
+        .unwrap();
+        assert_eq!(deleted, uids.len());
+
+        // Only the target rows were removed; every other row survives.
+        let r = db.r_transaction().unwrap();
+        let expect = BN - uids.len() as u64;
+        assert_eq!(r.len().primary::<BenchMinimal>().unwrap(), expect);
+        assert_eq!(r.len().primary::<BenchAddress>().unwrap(), expect);
+        assert_eq!(r.len().primary::<BenchThread>().unwrap(), expect);
+        assert_eq!(r.len().primary::<BenchEnvelopeV3>().unwrap(), expect);
+
+        let pk = |uid: u32| {
+            BenchMinimal {
+                account_id: BN_ACCT,
+                mailbox_id: BN_MB,
+                uid,
+                flags_hash: 0,
+            }
+            .pk()
+        };
+        assert!(r.get().primary::<BenchMinimal>(pk(1)).unwrap().is_some());
+        assert!(r.get().primary::<BenchMinimal>(pk(3)).unwrap().is_none());
+        assert!(r
+            .get()
+            .secondary::<BenchEnvelopeV3>(BenchEnvelopeV3Key::create_envelope_id, addr_hash(1))
+            .unwrap()
+            .is_some());
+        assert!(r
+            .get()
+            .secondary::<BenchEnvelopeV3>(BenchEnvelopeV3Key::create_envelope_id, addr_hash(17))
+            .unwrap()
+            .is_none());
     }
 
     /// Failure mode of the current design: a scan that stalls inside the write tx

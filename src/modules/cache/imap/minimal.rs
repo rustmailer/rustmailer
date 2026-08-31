@@ -2,7 +2,7 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use native_db::*;
 use native_model::{native_model, Model};
@@ -13,8 +13,8 @@ use crate::{
     modules::{
         cache::imap::{manager::EnvelopeFlagsManager, migration::EmailEnvelopeV3},
         database::{
-            batch_insert_impl, enqueue_delete_secondary_impl, filter_by_secondary_key_impl,
-            manager::DB_MANAGER, safe_delete::RowFilter, update_impl,
+            batch_delete_impl, batch_insert_impl, enqueue_delete_secondary_impl,
+            filter_by_secondary_key_impl, manager::DB_MANAGER, safe_delete::RowFilter, update_impl,
         },
         error::{code::ErrorCode, RustMailerResult},
         utils::envelope_hash,
@@ -95,27 +95,29 @@ impl MinimalEnvelope {
         mailbox_id: u64,
         to_delete_uid: &[u32],
     ) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 50;
-        let to_delete_set: HashSet<u32> = to_delete_uid.iter().copied().collect();
-        let to_delete_set = Arc::new(to_delete_set);
-        let filter: RowFilter<MinimalEnvelope> = Arc::new(move |e: &MinimalEnvelope| {
-            e.account_id == account_id && to_delete_set.contains(&e.uid)
-        });
-        enqueue_delete_secondary_impl(
-            DB_MANAGER.envelope_db(),
-            MinimalEnvelopeKey::mailbox_id,
-            mailbox_id,
-            filter,
-            BATCH_SIZE,
-            format!(
-                "MinimalEnvelope::clean_envelopes account_id={} mailbox_id={}",
-                account_id, mailbox_id
-            ),
-        )?;
+        let hashes: Vec<u64> = to_delete_uid
+            .iter()
+            .map(|uid| envelope_hash(account_id, mailbox_id, *uid))
+            .collect();
+
+        let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
+            let mut to_delete = Vec::with_capacity(hashes.len());
+            for hash in hashes {
+                if let Some(envelope) = rw
+                    .get()
+                    .primary::<MinimalEnvelope>(hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                {
+                    to_delete.push(envelope);
+                }
+            }
+            Ok(to_delete)
+        })
+        .await?;
 
         info!(
-            "Enqueued deletion of minimal envelopes for account_id={} mailbox_id={}",
-            account_id, mailbox_id
+            "Deleted {} minimal envelopes for account_id={} mailbox_id={}",
+            deleted, account_id, mailbox_id
         );
         Ok(())
     }

@@ -86,6 +86,10 @@ impl EnvelopeFlagsManager {
         mailbox_id: u64,
         to_delete_uid: &[u32],
     ) -> RustMailerResult<()> {
+        EmailEnvelopeV3::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
+        MinimalEnvelope::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
+        AddressEntity::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
+        EmailThread::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
         if let Some(mailboxes_map) = FLAGS_STATE_MAP.get(&account_id) {
             if let Some(flags_map) = mailboxes_map.get(&mailbox_id) {
                 for uid in to_delete_uid {
@@ -99,10 +103,7 @@ impl EnvelopeFlagsManager {
                 FLAGS_STATE_MAP.remove(&account_id);
             }
         }
-        EmailEnvelopeV3::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
-        MinimalEnvelope::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
-        AddressEntity::clean_envelopes(account_id, mailbox_id, to_delete_uid).await?;
-        EmailThread::clean_envelopes(account_id, mailbox_id, to_delete_uid).await
+        Ok(())
     }
 
     /// Clean all data associated with a specific mailbox for a given account.

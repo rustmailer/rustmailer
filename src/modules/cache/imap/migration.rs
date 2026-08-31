@@ -2,7 +2,7 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use native_db::*;
 use native_model::{native_model, Model};
@@ -26,9 +26,9 @@ use crate::{
         },
         common::Addr,
         database::{
-            enqueue_delete_secondary_impl, filter_by_secondary_key_impl, manager::DB_MANAGER,
-            paginate_secondary_scan_impl, safe_delete::RowFilter, secondary_find_impl, update_impl,
-            with_transaction,
+            batch_delete_impl, enqueue_delete_secondary_impl, filter_by_secondary_key_impl,
+            manager::DB_MANAGER, paginate_secondary_scan_impl, safe_delete::RowFilter,
+            secondary_find_impl, update_impl, with_transaction,
         },
         error::{code::ErrorCode, RustMailerResult},
         imap::section::{EmailBodyPart, ImapAttachment},
@@ -475,27 +475,29 @@ impl EmailEnvelopeV3 {
         mailbox_id: u64,
         to_delete_uid: &[u32],
     ) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 50;
-        let to_delete_set: HashSet<u32> = to_delete_uid.iter().copied().collect();
-        let to_delete_set = Arc::new(to_delete_set);
-        let filter: RowFilter<EmailEnvelopeV3> = Arc::new(move |e: &EmailEnvelopeV3| {
-            e.account_id == account_id && to_delete_set.contains(&e.uid)
-        });
-        enqueue_delete_secondary_impl(
-            DB_MANAGER.envelope_db(),
-            EmailEnvelopeV3Key::mailbox_id,
-            mailbox_id,
-            filter,
-            BATCH_SIZE,
-            format!(
-                "EmailEnvelopeV3::clean_envelopes account_id={} mailbox_id={}",
-                account_id, mailbox_id
-            ),
-        )?;
+        let hashes: Vec<u64> = to_delete_uid
+            .iter()
+            .map(|uid| envelope_hash(account_id, mailbox_id, *uid))
+            .collect();
+
+        let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
+            let mut to_delete = Vec::with_capacity(hashes.len());
+            for hash in hashes {
+                if let Some(envelope) = rw
+                    .get()
+                    .secondary::<EmailEnvelopeV3>(EmailEnvelopeV3Key::create_envelope_id, hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                {
+                    to_delete.push(envelope);
+                }
+            }
+            Ok(to_delete)
+        })
+        .await?;
 
         info!(
-            "Enqueued deletion of envelopes for account_id={} mailbox_id={}",
-            account_id, mailbox_id
+            "Deleted {} envelopes for account_id={} mailbox_id={}",
+            deleted, account_id, mailbox_id
         );
         Ok(())
     }

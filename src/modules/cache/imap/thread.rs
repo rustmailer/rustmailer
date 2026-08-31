@@ -2,7 +2,7 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use futures::future::join_all;
 use native_db::*;
@@ -23,8 +23,8 @@ use crate::{
             },
         },
         database::{
-            enqueue_delete_secondary_impl, manager::DB_MANAGER, paginate_secondary_scan_impl,
-            safe_delete::RowFilter,
+            batch_delete_impl, enqueue_delete_secondary_impl, manager::DB_MANAGER,
+            paginate_secondary_scan_impl, safe_delete::RowFilter,
         },
         error::{code::ErrorCode, RustMailerResult},
         rest::response::DataPage,
@@ -112,32 +112,29 @@ impl EmailThread {
         mailbox_id: u64,
         to_delete_uid: &[u32],
     ) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 50;
-
-        let to_delete_set: HashSet<u64> = to_delete_uid
+        let hashes: Vec<u64> = to_delete_uid
             .iter()
             .map(|uid| envelope_hash(account_id, mailbox_id, *uid))
             .collect();
 
-        let to_delete_set = Arc::new(to_delete_set);
-        let filter: RowFilter<EmailThread> = Arc::new(move |e: &EmailThread| {
-            e.account_id == account_id && to_delete_set.contains(&e.envelope_id)
-        });
-        enqueue_delete_secondary_impl(
-            DB_MANAGER.envelope_db(),
-            EmailThreadKey::mailbox_id,
-            mailbox_id,
-            filter,
-            BATCH_SIZE,
-            format!(
-                "EmailThread::clean_envelopes account_id={} mailbox_id={}",
-                account_id, mailbox_id
-            ),
-        )?;
+        let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
+            let mut to_delete = Vec::with_capacity(hashes.len());
+            for hash in hashes {
+                if let Some(thread) = rw
+                    .get()
+                    .secondary::<EmailThread>(EmailThreadKey::envelope_id, hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                {
+                    to_delete.push(thread);
+                }
+            }
+            Ok(to_delete)
+        })
+        .await?;
 
         info!(
-            "Enqueued deletion of thread entities for mailbox_id={} account_id={}",
-            mailbox_id, account_id
+            "Deleted {} thread entities for account_id={} mailbox_id={}",
+            deleted, account_id, mailbox_id
         );
         Ok(())
     }

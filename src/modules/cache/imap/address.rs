@@ -2,7 +2,7 @@
 // Licensed under RustMailer License Agreement v1.0
 // Unauthorized copying, modification, or distribution is prohibited.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use native_db::*;
 use native_model::{native_model, Model};
@@ -20,12 +20,13 @@ use crate::{
             },
         },
         database::{
-            enqueue_delete_secondary_impl, filter_by_secondary_key_impl, manager::DB_MANAGER,
-            safe_delete::RowFilter,
+            batch_delete_impl, enqueue_delete_secondary_impl, filter_by_secondary_key_impl,
+            manager::DB_MANAGER, safe_delete::RowFilter,
         },
-        error::RustMailerResult,
+        error::{code::ErrorCode, RustMailerResult},
         utils::envelope_hash,
     },
+    raise_error,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize, Object)]
@@ -102,32 +103,31 @@ impl AddressEntity {
         mailbox_id: u64,
         to_delete_uid: &[u32],
     ) -> RustMailerResult<()> {
-        const BATCH_SIZE: usize = 50;
-
-        let to_delete_set: HashSet<u64> = to_delete_uid
+        let hashes: Vec<u64> = to_delete_uid
             .iter()
             .map(|uid| envelope_hash(account_id, mailbox_id, *uid))
             .collect();
 
-        let to_delete_set = Arc::new(to_delete_set);
-        let filter: RowFilter<AddressEntity> = Arc::new(move |e: &AddressEntity| {
-            e.account_id == account_id && to_delete_set.contains(&e.envelope_hash)
-        });
-        enqueue_delete_secondary_impl(
-            DB_MANAGER.envelope_db(),
-            AddressEntityKey::mailbox_id,
-            mailbox_id,
-            filter,
-            BATCH_SIZE,
-            format!(
-                "AddressEntity::clean_envelopes account_id={} mailbox_id={}",
-                account_id, mailbox_id
-            ),
-        )?;
+        let deleted = batch_delete_impl(DB_MANAGER.envelope_db(), move |rw| {
+            let mut to_delete = Vec::new();
+            for hash in hashes {
+                let entities: Vec<AddressEntity> = rw
+                    .scan()
+                    .secondary(AddressEntityKey::envelope_hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                    .start_with(hash)
+                    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+                    .filter_map(Result::ok)
+                    .collect();
+                to_delete.extend(entities);
+            }
+            Ok(to_delete)
+        })
+        .await?;
 
         info!(
-            "Enqueued deletion of address entities for mailbox_id={} account_id={}",
-            mailbox_id, account_id
+            "Deleted {} address entities for mailbox_id={} account_id={}",
+            deleted, mailbox_id, account_id
         );
         Ok(())
     }
