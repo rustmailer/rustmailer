@@ -65,6 +65,7 @@ jobs:
       - name: Build frontend (web)
         working-directory: ./web
         run: |
+          pnpm approve-builds --yes
           pnpm install
           pnpm run build
 
