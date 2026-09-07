@@ -49,29 +49,29 @@ where
     Ok(entities)
 }
 
-/// Phase 1 (read-only): collect up to `limit` entities whose secondary key starts with
-/// `start_with` and satisfy `filter`.
-///
-/// Runs in a read transaction on a blocking thread. If the scan hangs, no write lock is
-/// held, so other DB writers keep working.
-pub async fn collect_secondary_range_impl<T>(
-    database: &Arc<Database<'static>>,
-    key_def: impl ToKeyDefinition<KeyOptions> + Send + 'static,
-    start_with: impl ToKey + Send + 'static,
-    filter: RowFilter<T>,
-    limit: usize,
-) -> RustMailerResult<Vec<T>>
-where
-    T: ToInput + Clone + Send + 'static,
-{
-    let db = database.clone();
-    spawn_blocking(move || {
-        let key_def = key_def.key_definition();
-        collect_secondary_range_sync(&db, &key_def, start_with, &filter, limit)
-    })
-    .await
-    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
-}
+// /// Phase 1 (read-only): collect up to `limit` entities whose secondary key starts with
+// /// `start_with` and satisfy `filter`.
+// ///
+// /// Runs in a read transaction on a blocking thread. If the scan hangs, no write lock is
+// /// held, so other DB writers keep working.
+// pub async fn collect_secondary_range_impl<T>(
+//     database: &Arc<Database<'static>>,
+//     key_def: impl ToKeyDefinition<KeyOptions> + Send + 'static,
+//     start_with: impl ToKey + Send + 'static,
+//     filter: RowFilter<T>,
+//     limit: usize,
+// ) -> RustMailerResult<Vec<T>>
+// where
+//     T: ToInput + Clone + Send + 'static,
+// {
+//     let db = database.clone();
+//     spawn_blocking(move || {
+//         let key_def = key_def.key_definition();
+//         collect_secondary_range_sync(&db, &key_def, start_with, &filter, limit)
+//     })
+//     .await
+//     .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?
+// }
 
 /// Phase 2 (write-only): delete `to_delete` by primary key (synchronous core).
 fn delete_by_primary_sync<T>(
@@ -153,37 +153,39 @@ where
     delete_by_primary_impl(database, to_delete).await
 }
 
-/// Two-phase batch delete: read-collect then write-delete, chunked by `batch_size`.
+/// Two-phase batch delete: snapshot ALL matching rows in one read-only scan, then
+/// delete them chunk by chunk.
 ///
-/// This is a drop-in replacement for the current "scan + delete inside one write
-/// transaction" pattern used by the stale-envelope cleanup. The `filter` is applied
-/// inside the read scan (before `take`), preserving the current batching semantics.
+/// The snapshot is taken once, so rows inserted or re-inserted by concurrent
+/// writers after the snapshot are out of scope and the delete loop is bounded:
+/// it can never turn into the 1.7.1 livelock (re-scanning the same `start_with`
+/// forever while the sync pipeline keeps rewriting matching rows).
 pub async fn batch_delete_secondary_impl<T>(
     database: &Arc<Database<'static>>,
     key_def: impl ToKeyDefinition<KeyOptions> + Send + 'static,
-    start_with: impl ToKey + Send + Clone + 'static,
+    start_with: impl ToKey + Send + 'static,
     filter: RowFilter<T>,
     batch_size: usize,
 ) -> RustMailerResult<usize>
 where
     T: ToInput + Clone + Send + 'static,
 {
-    // Convert to the concrete, cloneable KeyDefinition once, so the loop can reuse it.
-    let key_def = key_def.key_definition();
+    let db = database.clone();
+    let snapshot_filter = filter.clone();
+    let items = spawn_blocking(move || {
+        let key_def = key_def.key_definition();
+        collect_secondary_range_sync(&db, &key_def, start_with, &snapshot_filter, usize::MAX)
+    })
+    .await
+    .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))??;
+
     let mut total_deleted = 0usize;
-    loop {
-        let batch = collect_secondary_range_impl::<T>(
-            database,
-            key_def.clone(),
-            start_with.clone(),
-            filter.clone(),
-            batch_size,
-        )
-        .await?;
-        if batch.is_empty() {
-            break;
-        }
-        total_deleted += delete_by_primary_impl(database, batch).await?;
+    for chunk in items.chunks(batch_size) {
+        let db = database.clone();
+        let chunk: Vec<T> = chunk.to_vec();
+        total_deleted += spawn_blocking(move || delete_snapshot_chunk_sync(&db, &chunk))
+            .await
+            .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))??;
     }
     Ok(total_deleted)
 }
@@ -191,6 +193,44 @@ where
 /// Pause inserted between deletion chunks on the background worker, giving other
 /// writers a window to acquire the (single) redb write lock.
 const INTER_CHUNK_DELAY: Duration = Duration::from_millis(1);
+
+/// Phase 2 (write-only): delete one chunk of snapshot items inside a single write
+/// transaction.
+///
+/// Each item is removed by primary key. Rows deleted or modified by a concurrent
+/// writer between the snapshot and this write phase raise `KeyNotFound` /
+/// `IncorrectInputData` and are skipped: the snapshot is finite, so skipping can
+/// never turn into the old re-scan livelock. Skipped rows simply get re-evaluated
+/// by the next cleanup pass.
+fn delete_snapshot_chunk_sync<T>(
+    database: &Arc<Database<'static>>,
+    chunk: &[T],
+) -> RustMailerResult<usize>
+where
+    T: ToInput + Clone,
+{
+    if chunk.is_empty() {
+        return Ok(0);
+    }
+    let rw_transaction = database
+        .rw_transaction()
+        .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
+    let mut removed = 0usize;
+    for item in chunk {
+        match rw_transaction.remove::<T>(item.clone()) {
+            Ok(_) => removed += 1,
+            Err(native_db::db_type::Error::KeyNotFound { .. }) => {}
+            Err(native_db::db_type::Error::IncorrectInputData { .. }) => {}
+            Err(e) => {
+                return Err(raise_error!(format!("{:#?}", e), ErrorCode::InternalError))
+            }
+        }
+    }
+    rw_transaction
+        .commit()
+        .map_err(|e| raise_error!(format!("{:#?}", e), ErrorCode::InternalError))?;
+    Ok(removed)
+}
 
 /// Chunked two-phase delete with a short pause between chunks. Intended for the
 /// background worker: the write lock is held only for one bounded chunk at a time,
@@ -204,17 +244,16 @@ fn batch_delete_secondary_paced_sync<T, K>(
 ) -> RustMailerResult<usize>
 where
     T: ToInput + Clone,
-    K: ToKey + Clone,
+    K: ToKey,
 {
+    let items = collect_secondary_range_sync(database, key_def, start_with, filter, usize::MAX)?;
     let mut total_deleted = 0usize;
-    loop {
-        let batch =
-            collect_secondary_range_sync(database, key_def, start_with.clone(), filter, batch_size)?;
-        if batch.is_empty() {
-            break;
+    let chunks: Vec<&[T]> = items.chunks(batch_size).collect();
+    for (index, chunk) in chunks.iter().enumerate() {
+        total_deleted += delete_snapshot_chunk_sync(database, chunk)?;
+        if index + 1 < chunks.len() {
+            std::thread::sleep(INTER_CHUNK_DELAY);
         }
-        total_deleted += delete_by_primary_sync(database, batch)?;
-        std::thread::sleep(INTER_CHUNK_DELAY);
     }
     Ok(total_deleted)
 }
@@ -579,6 +618,147 @@ mod tests {
         for row in snapshot(&db) {
             assert_eq!(row.account_id, 2);
         }
+    }
+
+    /// Regression test for the 1.7.1 delete livelock: a concurrent writer keeps
+    /// updating/rebuilding rows that still match the filter while the async batch
+    /// delete runs. The old implementation re-scanned from the same `start_with`
+    /// and never terminated (2000 rows ended up reporting ~310k "deleted"). The
+    /// fixed snapshot delete must terminate and report at most the snapshot size.
+    #[tokio::test]
+    async fn batch_delete_terminates_under_concurrent_writes() {
+        const N: u32 = 2000;
+        const BATCH: usize = 50;
+
+        let db = new_db();
+        let rows: Vec<TestEnvelope> = (1..=N)
+            .map(|uid| TestEnvelope {
+                account_id: 1,
+                mailbox_id: 1,
+                uid,
+                data: format!("row-{uid}"),
+            })
+            .collect();
+        let rw = db.rw_transaction().unwrap();
+        for row in rows {
+            rw.insert(row).unwrap();
+        }
+        rw.commit().unwrap();
+
+        // Concurrent writer mirroring the sync pipeline re-saving envelopes while
+        // cleanup is in flight: same primary key, fresh data, lock released between
+        // rows so the delete worker gets write windows.
+        let writer_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer_db = Arc::clone(&db);
+        let writer_stop2 = Arc::clone(&writer_stop);
+        let writer = std::thread::spawn(move || {
+            let mut uid = 1u32;
+            while !writer_stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                let rw = writer_db.rw_transaction().unwrap();
+                rw.upsert(TestEnvelope {
+                    account_id: 1,
+                    mailbox_id: 1,
+                    uid,
+                    data: format!("updated-{uid}"),
+                })
+                .unwrap();
+                rw.commit().unwrap();
+                uid = if uid == N { 1 } else { uid + 1 };
+            }
+        });
+
+        let filter: RowFilter<TestEnvelope> = Arc::new(|e: &TestEnvelope| e.account_id == 1);
+        let deleted = tokio::time::timeout(Duration::from_secs(30), async {
+            batch_delete_secondary_impl(&db, TestEnvelopeKey::mailbox_id, 1u64, filter, BATCH)
+                .await
+                .unwrap()
+        })
+        .await
+        .expect("batch delete did not terminate: delete worker livelock is back");
+
+        writer_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+
+        println!(
+            "[regression] async delete reported {deleted} deletions for a {N}-row snapshot under concurrent writes"
+        );
+
+        assert!(
+            deleted <= N as usize,
+            "delete reported {deleted} deletions for a {N}-row snapshot: rows are being double counted"
+        );
+    }
+
+    /// Same regression as the async test, but exercising the worker's synchronous
+    /// paced core (the exact loop that livelocked in production).
+    #[test]
+    fn paced_delete_terminates_under_concurrent_writes() {
+        const N: u32 = 2000;
+        const BATCH: usize = 50;
+
+        let db = new_db();
+        let rows: Vec<TestEnvelope> = (1..=N)
+            .map(|uid| TestEnvelope {
+                account_id: 1,
+                mailbox_id: 1,
+                uid,
+                data: format!("row-{uid}"),
+            })
+            .collect();
+        let rw = db.rw_transaction().unwrap();
+        for row in rows {
+            rw.insert(row).unwrap();
+        }
+        rw.commit().unwrap();
+
+        let filter: RowFilter<TestEnvelope> = Arc::new(|e: &TestEnvelope| e.account_id == 1);
+        let key_def = TestEnvelopeKey::mailbox_id.key_definition();
+
+        let writer_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer_db = Arc::clone(&db);
+        let writer_stop2 = Arc::clone(&writer_stop);
+        let writer = std::thread::spawn(move || {
+            let mut uid = 1u32;
+            while !writer_stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                let rw = writer_db.rw_transaction().unwrap();
+                rw.upsert(TestEnvelope {
+                    account_id: 1,
+                    mailbox_id: 1,
+                    uid,
+                    data: format!("updated-{uid}"),
+                })
+                .unwrap();
+                rw.commit().unwrap();
+                uid = if uid == N { 1 } else { uid + 1 };
+            }
+        });
+
+        let db2 = Arc::clone(&db);
+        let filter2 = Arc::clone(&filter);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result =
+                batch_delete_secondary_paced_sync(&db2, &key_def, 1u64, &filter2, BATCH);
+            let _ = tx.send(result);
+        });
+
+        let deleted = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("worker delete did not terminate: delete worker livelock is back")
+            .expect("worker delete failed");
+
+        writer_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        worker.join().unwrap();
+
+        println!(
+            "[regression] paced delete reported {deleted} deletions for a {N}-row snapshot under concurrent writes"
+        );
+
+        assert!(
+            deleted <= N as usize,
+            "delete reported {deleted} deletions for a {N}-row snapshot: rows are being double counted"
+        );
     }
 
     /// Production point-lookup delete (the stale-envelope cleanup fix): one bounded
