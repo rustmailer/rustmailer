@@ -18,9 +18,9 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
           - target: x86_64-apple-darwin
             os: macos-latest
           # - target: x86_64-pc-windows-msvc
@@ -116,7 +116,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Download build artifacts
@@ -151,7 +151,7 @@ jobs:
   docker:
     name: Build and Push Docker Image
     needs: [build, release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     
     steps:
       - name: Checkout code
