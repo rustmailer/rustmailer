@@ -16,7 +16,11 @@ use tokio_io_timeout::TimeoutStream;
 use tokio_socks::tcp::Socks5Stream;
 use tracing::error;
 
-pub(crate) const TIMEOUT: Duration = Duration::from_secs(3600);
+/// Socket-level connect/read/write timeout for IMAP connections. This is the
+/// last-resort backstop: command sequences already carry their own (shorter)
+/// timeout in the executor. Previously 3600s, which let a stalled or throttled
+/// server pin a pool connection for a full hour (INCIDENT-6717207556896619).
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) async fn establish_tcp_connection_with_timeout(
     address: SocketAddr,

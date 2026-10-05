@@ -16,16 +16,80 @@ use crate::modules::imap::session::SessionStream;
 use crate::modules::oauth2::token::OAuth2AccessToken;
 use crate::{decrypt, raise_error, rustmailer_version};
 use async_imap::Session;
-use tracing::error;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{error, warn};
+
+/// Initial backoff applied after a failed IMAP connection attempt (dial, login
+/// or capability negotiation). Doubles on consecutive failures up to
+/// [`CONNECT_BACKOFF_MAX`] and resets to zero after a successful connection.
+const CONNECT_BACKOFF_INITIAL: Duration = Duration::from_secs(30);
+/// Upper bound of the connection backoff sequence: 30s → 60s → … → 10min.
+const CONNECT_BACKOFF_MAX: Duration = Duration::from_secs(600);
 
 #[derive(Debug)]
 pub struct ImapConnectionManager {
     pub account_id: u64,
+    /// Current connection backoff duration in milliseconds; 0 = no backoff.
+    backoff_ms: AtomicU64,
+    /// Unix timestamp (ms) before which no new connection attempt may start.
+    next_attempt_ms: AtomicU64,
+}
+
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl ImapConnectionManager {
     pub fn new(account_id: u64) -> Self {
-        Self { account_id }
+        Self {
+            account_id,
+            backoff_ms: AtomicU64::new(0),
+            next_attempt_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Records a failed connection attempt and extends the backoff window.
+    /// This keeps bb8's dial retries and `min_idle` replenishment from
+    /// hammering an unreachable or throttling server — every login attempt
+    /// feeds a server-side throttle (INCIDENT-6717207556896619).
+    pub(crate) fn note_connection_failure(&self) {
+        let current = self.backoff_ms.load(Ordering::Relaxed);
+        let next = if current == 0 {
+            CONNECT_BACKOFF_INITIAL.as_millis() as u64
+        } else {
+            (current * 2).min(CONNECT_BACKOFF_MAX.as_millis() as u64)
+        };
+        self.backoff_ms.store(next, Ordering::Relaxed);
+        self.next_attempt_ms
+            .store(unix_now_ms().saturating_add(next), Ordering::Relaxed);
+        warn!(
+            account_id = self.account_id,
+            backoff_secs = next / 1000,
+            "IMAP connection attempt failed, backing off before next attempt"
+        );
+    }
+
+    /// Records a successful connection and clears the backoff window.
+    pub(crate) fn note_connection_success(&self) {
+        self.backoff_ms.store(0, Ordering::Relaxed);
+        self.next_attempt_ms.store(0, Ordering::Relaxed);
+    }
+
+    /// Sleeps until the backoff window (if any) has elapsed. Concurrent
+    /// callers all park until the window opens, pacing connection storms.
+    pub(crate) async fn wait_for_backoff(&self) {
+        loop {
+            let now = unix_now_ms();
+            let until = self.next_attempt_ms.load(Ordering::Relaxed);
+            if now >= until {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(until - now)).await;
+        }
     }
 
     pub async fn fetch_account(&self) -> RustMailerResult<AccountModel> {
