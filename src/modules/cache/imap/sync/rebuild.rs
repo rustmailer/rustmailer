@@ -54,9 +54,9 @@ pub async fn rebuild_cache(
 
     let elapsed_time = start_time.elapsed().as_secs();
     info!(
-        "Rebuild account cache completed: {} envelopes inserted. {} secs elapsed. \
+        "Account {}: Rebuild account cache completed: {} envelopes inserted. {} secs elapsed. \
         This is a full data fetch as there was no local cache data available.",
-        total_inserted, elapsed_time
+        account.id, total_inserted, elapsed_time
     );
     Ok(())
 }
@@ -110,9 +110,9 @@ pub async fn rebuild_cache_since_date(
 
     let elapsed_time = start_time.elapsed().as_secs();
     info!(
-        "Rebuild account cache completed: {} envelopes inserted. {} secs elapsed. \
+        "Account {}: Rebuild account cache completed: {} envelopes inserted. {} secs elapsed. \
         Data fetched from server starting from the specified date: {}.",
-        total_inserted, elapsed_time, date
+        account.id, total_inserted, elapsed_time, date
     );
     Ok(())
 }
@@ -124,6 +124,17 @@ pub async fn should_rebuild_cache(
 ) -> RustMailerResult<bool> {
     // If both local mailboxes and local envelopes exist, no rebuild is needed.
     if mailbox_count > 0 && local_envelope_count > 0 {
+        return Ok(false);
+    }
+    // An empty envelope index alongside intact mailbox rows is a legitimate
+    // steady state when a sync window (`date_since`) is configured: every
+    // cached message may simply have aged out of the window. Treating it as
+    // cache loss used to delete all MailBox rows and re-run a rebuild that
+    // inserts nothing — an endless, silent rebuild loop during which newly
+    // arriving mail was ingested without email-added events
+    // (INCIDENT-2718318811333577). The regular sync paths still self-heal a
+    // genuinely lost index (no max UID → date-window/full fetch).
+    if mailbox_count > 0 && local_envelope_count == 0 && account.date_since.is_some() {
         return Ok(false);
     }
     // If there are local mailboxes but no local envelopes, clear the mailboxes.

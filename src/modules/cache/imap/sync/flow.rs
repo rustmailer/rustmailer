@@ -17,7 +17,7 @@ use crate::{
                 sync::rebuild::{rebuild_mailbox_cache, rebuild_mailbox_cache_since_date},
             },
             sync_type::SyncType,
-            SEMAPHORE,
+            acquire_account_sync_permit, SEMAPHORE,
         },
         common::AddrVec,
         context::executors::RUST_MAIL_CONTEXT,
@@ -52,6 +52,20 @@ use tracing::{debug, error, info, warn};
 const ENVELOPE_BATCH_SIZE: u32 = 1000;
 const UID_FLAGS_BATCH_SIZE: u32 = 10000;
 
+/// True once the account has completed its initial sync at least once. Gates
+/// event emission on the bulk ingestion paths (`fetch_and_save_since_date` /
+/// `fetch_and_save_full_mailbox`): a brand-new account's first fetch must not
+/// storm the webhook, but a later rebuild re-ingesting mail after local cache
+/// loss must still emit email-added events — previously those paths stored
+/// mail silently, losing the webhook for every message they touched
+/// (INCIDENT-2718318811333577).
+async fn account_completed_initial_sync(account_id: u64) -> RustMailerResult<bool> {
+    Ok(AccountRunningState::get(account_id)
+        .await?
+        .map(|state| state.is_initial_sync_completed)
+        .unwrap_or(false))
+}
+
 pub async fn fetch_and_save_since_date(
     account: &AccountModel,
     date: &str,
@@ -69,6 +83,12 @@ pub async fn fetch_and_save_since_date(
     if len == 0 {
         return Ok(0);
     }
+
+    // Emit email-added events for ingested mail once the account is past its
+    // initial sync and the event is watched, mirroring
+    // fetch_and_store_new_envelopes_by_uid_list.
+    let fire_events = account_completed_initial_sync(account_id).await?
+        && EventHookTask::is_watching_email_add_event(account_id).await?;
 
     let folder_limit = account.folder_limit;
     // sort small -> bigger
@@ -100,47 +120,87 @@ pub async fn fetch_and_save_since_date(
         let encoded_name = mailbox.encoded_name();
         let mailbox_id = mailbox.id;
         let mailbox_name = mailbox.name.clone();
-        match SEMAPHORE.clone().acquire_owned().await {
-            Ok(permit) => {
-                if initial {
-                    AccountRunningState::set_current_sync_batch_number(
-                        account_id,
-                        (index + 1) as u32,
-                    )
-                    .await?;
-                }
-                let handle: tokio::task::JoinHandle<Result<(), RustMailerError>> =
-                    tokio::spawn(async move {
-                        let _permit = permit; // Ensure permit is released when task finishes
-                        let executor = RUST_MAIL_CONTEXT.imap(account_id).await?;
-                        // Fetch metadata for the current batch of UIDs
-                        let fetches = executor
-                            .uid_fetch_meta(&batch, &encoded_name, minimal_sync)
-                            .await?;
-
-                        if minimal_sync {
-                            let envelopes =
-                                extract_minimal_envelopes(fetches, account_id, mailbox_id)?;
-                            MinimalEnvelope::batch_insert(envelopes).await?;
-                        } else {
-                            let envelopes =
-                                extract_rich_envelopes(&fetches, account_id, &mailbox_name)?;
-                            EmailEnvelopeV3::save_envelopes(envelopes).await?;
-                        };
-                        Ok(())
-                    });
-                handles.push(handle);
-            }
+        let permit = match SEMAPHORE.clone().acquire_owned().await {
+            Ok(permit) => permit,
             Err(err) => {
                 error!("Failed to acquire semaphore permit, error: {:#?}", err);
+                continue;
             }
+        };
+        let account_permit = match acquire_account_sync_permit(account_id).await {
+            Ok(permit) => permit,
+            Err(err) => {
+                error!(
+                    "Failed to acquire account sync permit for account {}, error: {:#?}",
+                    account_id, err
+                );
+                continue;
+            }
+        };
+        if initial {
+            AccountRunningState::set_current_sync_batch_number(account_id, (index + 1) as u32)
+                .await?;
         }
+        let handle: tokio::task::JoinHandle<Result<Vec<Fetch>, RustMailerError>> = tokio::spawn(
+            async move {
+                let _permit = permit; // Ensure permit is released when task finishes
+                let _account_permit = account_permit;
+                let executor = RUST_MAIL_CONTEXT.imap(account_id).await?;
+                // Fetch metadata for the current batch of UIDs. When events
+                // must fire, always fetch rich metadata (the event payload
+                // needs headers), mirroring the watched incremental path.
+                let fetches = executor
+                    .uid_fetch_meta(&batch, &encoded_name, minimal_sync && !fire_events)
+                    .await?;
+
+                if minimal_sync {
+                    let envelopes =
+                        extract_minimal_envelopes(&fetches, account_id, mailbox_id)?;
+                    MinimalEnvelope::batch_insert(envelopes).await?;
+                    if fire_events {
+                        // Mirror the watched incremental path: rich envelopes
+                        // are stored as well so the event payload is complete.
+                        let envelopes =
+                            extract_rich_envelopes(&fetches, account_id, &mailbox_name)?;
+                        EmailEnvelopeV3::save_envelopes(envelopes).await?;
+                    }
+                } else {
+                    let envelopes = extract_rich_envelopes(&fetches, account_id, &mailbox_name)?;
+                    EmailEnvelopeV3::save_envelopes(envelopes).await?;
+                };
+                Ok(fetches)
+            },
+        );
+        handles.push(handle);
     }
+    let mut batched_fetches = Vec::new();
     for task in handles {
         match task.await {
-            Ok(Ok(_)) => {}
+            Ok(Ok(fetches)) => batched_fetches.push(fetches),
             Ok(Err(err)) => return Err(err),
             Err(e) => return Err(raise_error!(format!("{:#?}", e), ErrorCode::InternalError)),
+        }
+    }
+
+    // Emit events after all batches are stored, in batch order. Storage has
+    // already succeeded at this point, so event emission is best-effort: a
+    // failed content retrieval must not fail the whole sync (callers such as
+    // the rebuild paths delete the mailbox row on error).
+    if fire_events {
+        info!(
+            "Account {}: Mailbox '{}' ingested {} message(s) via date-window path, emitting email-added events.",
+            account_id, &mailbox.name, len
+        );
+        for fetches in &batched_fetches {
+            if let Err(e) = process_email_added_events(account, mailbox, fetches).await {
+                warn!(
+                    "Account {}: Failed to emit email-added events for {} message(s) in mailbox '{}': {:#?}",
+                    account_id,
+                    fetches.len(),
+                    &mailbox.name,
+                    e
+                );
+            }
         }
     }
 
@@ -173,6 +233,12 @@ pub async fn fetch_and_save_full_mailbox(
     let account_id = account.id;
     let minimal_sync = account.minimal_sync();
 
+    // Emit email-added events for ingested mail once the account is past its
+    // initial sync and the event is watched, mirroring
+    // fetch_and_store_new_envelopes_by_uid_list.
+    let fire_events = account_completed_initial_sync(account_id).await?
+        && EventHookTask::is_watching_email_add_event(account_id).await?;
+
     if initial {
         AccountRunningState::set_initial_current_syncing_folder(
             account_id,
@@ -182,8 +248,8 @@ pub async fn fetch_and_save_full_mailbox(
         .await?;
     }
     info!(
-        "Starting full mailbox sync for '{}', total={}, limit={:?}, batches={}, desc={}",
-        mailbox.name, total, folder_limit, total_batches, desc
+        "Account {}: Starting full mailbox sync for '{}', total={}, limit={:?}, batches={}, desc={}",
+        account_id, mailbox.name, total, folder_limit, total_batches, desc
     );
     // let semaphore = Arc::new(Semaphore::new(5));
     let mut handles = Vec::new();
@@ -192,55 +258,98 @@ pub async fn fetch_and_save_full_mailbox(
         let mailbox_id = mailbox.id;
         let mailbox_name = mailbox.name.clone();
         let encoded_name = mailbox.encoded_name();
-        match SEMAPHORE.clone().acquire_owned().await {
-            Ok(permit) => {
-                if initial {
-                    AccountRunningState::set_current_sync_batch_number(account_id, page).await?;
-                }
-                // Spawn a task with the acquired permit
-                // let account = account.clone();
-                let handle: tokio::task::JoinHandle<Result<usize, RustMailerError>> = tokio::spawn(
-                    async move {
-                        let _permit = permit; // Ensure permit is released when task finishes
-                        let executor = RUST_MAIL_CONTEXT.imap(account_id).await?;
-                        let (fetches, _) = executor
-                            .retrieve_metadata_paginated(
-                                page as u64,
-                                page_size as u64,
-                                &encoded_name,
-                                desc,
-                                minimal_sync,
-                            )
-                            .await?;
-                        let count = fetches.len();
-                        if minimal_sync {
-                            let envelopes =
-                                extract_minimal_envelopes(fetches, account_id, mailbox_id)?;
-                            MinimalEnvelope::batch_insert(envelopes).await?;
-                        } else {
-                            let envelopes =
-                                extract_rich_envelopes(&fetches, account_id, &mailbox_name)?;
-                            EmailEnvelopeV3::save_envelopes(envelopes).await?;
-                        };
-                        info!("Batch insertion completed for mailbox: {}, current page: {}, inserted count: {}", &mailbox_name, page, count);
-                        Ok(count)
-                    },
-                );
-                handles.push(handle);
-            }
+        let permit = match SEMAPHORE.clone().acquire_owned().await {
+            Ok(permit) => permit,
             Err(err) => {
                 error!("Failed to acquire semaphore permit, error: {:#?}", err);
+                continue;
             }
+        };
+        let account_permit = match acquire_account_sync_permit(account_id).await {
+            Ok(permit) => permit,
+            Err(err) => {
+                error!(
+                    "Failed to acquire account sync permit for account {}, error: {:#?}",
+                    account_id, err
+                );
+                continue;
+            }
+        };
+        if initial {
+            AccountRunningState::set_current_sync_batch_number(account_id, page).await?;
         }
+        // Spawn a task with the acquired permits
+        let handle: tokio::task::JoinHandle<Result<Vec<Fetch>, RustMailerError>> = tokio::spawn(
+            async move {
+                let _permit = permit; // Ensure permit is released when task finishes
+                let _account_permit = account_permit;
+                let executor = RUST_MAIL_CONTEXT.imap(account_id).await?;
+                // When events must fire, always fetch rich metadata (the
+                // event payload needs headers), mirroring the watched
+                // incremental path.
+                let (fetches, _) = executor
+                    .retrieve_metadata_paginated(
+                        page as u64,
+                        page_size as u64,
+                        &encoded_name,
+                        desc,
+                        minimal_sync && !fire_events,
+                    )
+                    .await?;
+                let count = fetches.len();
+                if minimal_sync {
+                    let envelopes =
+                        extract_minimal_envelopes(&fetches, account_id, mailbox_id)?;
+                    MinimalEnvelope::batch_insert(envelopes).await?;
+                    if fire_events {
+                        // Mirror the watched incremental path: rich envelopes
+                        // are stored as well so the event payload is complete.
+                        let envelopes =
+                            extract_rich_envelopes(&fetches, account_id, &mailbox_name)?;
+                        EmailEnvelopeV3::save_envelopes(envelopes).await?;
+                    }
+                } else {
+                    let envelopes = extract_rich_envelopes(&fetches, account_id, &mailbox_name)?;
+                    EmailEnvelopeV3::save_envelopes(envelopes).await?;
+                };
+                info!("Account {}: Batch insertion completed for mailbox: {}, current page: {}, inserted count: {}", account_id, &mailbox_name, page, count);
+                Ok(fetches)
+            },
+        );
+        handles.push(handle);
     }
 
+    let mut batched_fetches = Vec::new();
     for task in handles {
         match task.await {
-            Ok(Ok(count)) => {
-                inserted_count += count;
+            Ok(Ok(fetches)) => {
+                inserted_count += fetches.len();
+                batched_fetches.push(fetches);
             }
             Ok(Err(err)) => return Err(err),
             Err(e) => return Err(raise_error!(format!("{:#?}", e), ErrorCode::InternalError)),
+        }
+    }
+
+    // Emit events after all pages are stored, in page order. Storage has
+    // already succeeded at this point, so event emission is best-effort: a
+    // failed content retrieval must not fail the whole sync (callers such as
+    // the rebuild paths delete the mailbox row on error).
+    if fire_events {
+        info!(
+            "Account {}: Mailbox '{}' ingested {} message(s) via full-mailbox path, emitting email-added events.",
+            account_id, &mailbox.name, inserted_count
+        );
+        for fetches in &batched_fetches {
+            if let Err(e) = process_email_added_events(account, mailbox, fetches).await {
+                warn!(
+                    "Account {}: Failed to emit email-added events for {} message(s) in mailbox '{}': {:#?}",
+                    account_id,
+                    fetches.len(),
+                    &mailbox.name,
+                    e
+                );
+            }
         }
     }
 
@@ -469,8 +578,8 @@ async fn cleanup_deleted_mailboxes(
     MailBox::batch_delete(deleted_mailboxes.to_vec()).await?;
     let elapsed_time = start_time.elapsed().as_secs();
     info!(
-        "Cleanup deleted mailboxes completed: {} seconds elapsed.",
-        elapsed_time
+        "Account {}: Cleanup deleted mailboxes completed: {} seconds elapsed.",
+        account.id, elapsed_time
     );
     Ok(())
 }
@@ -564,7 +673,8 @@ async fn perform_incremental_sync(
             }
             None => {
                 info!(
-                    "No maximum UID found in index for mailbox, assuming local cache is missing."
+                    "Account {}: No maximum UID found in index for mailbox '{}', assuming local cache is missing.",
+                    account.id, &local_mailbox.name
                 );
 
                 match &account.date_since {

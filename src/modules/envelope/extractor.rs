@@ -139,7 +139,7 @@ pub fn extract_rich_envelopes(
 
 #[inline]
 pub fn extract_minimal_envelopes(
-    fetches: Vec<Fetch>,
+    fetches: &[Fetch],
     account_id: u64,
     mailbox_id: u64,
 ) -> RustMailerResult<Vec<MinimalEnvelope>> {

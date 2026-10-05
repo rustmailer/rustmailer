@@ -40,7 +40,8 @@ pub static SYNC_TASKS: LazyLock<AccountSyncTask> = LazyLock::new(AccountSyncTask
 static LAST_WARN_TIME: AtomicI64 = AtomicI64::new(0);
 const WARN_INTERVAL_MS: i64 = 600_000;
 
-/// Run one account sync on its own task under a watchdog.
+/// Run one account sync tick (pre-sync DB reads included) on its own task
+/// under a watchdog.
 ///
 /// Success and error reporting (status dispatcher + log text) is identical to
 /// the previous inline-await behaviour; the only new case is the timeout arm,
@@ -104,72 +105,73 @@ impl AccountSyncTask {
         let task = move |param: Option<u64>| {
             let account_id = param.unwrap();
             Box::pin(async move {
-                let account = AccountModel::get(account_id).await.ok();
-                match account {
-                    Some(account) => {
-                        if !account.enabled {
-                            let last = LAST_WARN_TIME.load(Ordering::Relaxed);
-                            let now = utc_now!();
-                            if now - last >= WARN_INTERVAL_MS {
-                                LAST_WARN_TIME.store(now, Ordering::Relaxed);
-                                warn!(
-                                    "Account {}: Sync aborted. Account is currently disabled.",
-                                    account_id
-                                );
-                            }
-                        } else {
-                            match account.mailer_type {
-                                MailerType::ImapSmtp => {
-                                    if let AuthType::OAuth2 = account.imap.as_ref().expect("BUG: account.imap is None, but this should never happen here").auth.auth_type {
+                // The entire tick body — including the pre-sync DB reads — runs
+                // under the watchdog. A hang in AccountModel::get or
+                // OAuth2AccessToken::get used to stall this loop silently:
+                // the watchdog only wrapped execute_*_sync, so a wedged
+                // pre-sync await meant the task stopped ticking with no error
+                // logged and nothing to restart it (INCIDENT-2718318811333577).
+                run_sync_with_watchdog(account_id, async move {
+                    let account = AccountModel::get(account_id).await.ok();
+                    match account {
+                        Some(account) => {
+                            if !account.enabled {
+                                let last = LAST_WARN_TIME.load(Ordering::Relaxed);
+                                let now = utc_now!();
+                                if now - last >= WARN_INTERVAL_MS {
+                                    LAST_WARN_TIME.store(now, Ordering::Relaxed);
+                                    warn!(
+                                        "Account {}: Sync aborted. Account is currently disabled.",
+                                        account_id
+                                    );
+                                }
+                            } else {
+                                match account.mailer_type {
+                                    MailerType::ImapSmtp => {
+                                        if let AuthType::OAuth2 = account.imap.as_ref().expect("BUG: account.imap is None, but this should never happen here").auth.auth_type {
+                                            if OAuth2AccessToken::get(account.id).await?.is_none() {
+                                                if utc_now!() % 300_000 == 0 {
+                                                    warn!("Account {}: Sync aborted. OAuth2 authorization not completed. Please visit the rustmailer admin page to authorize this account.", account_id);
+                                                }
+                                                return Ok(());
+                                            }
+                                        }
+                                        let acct = account.clone();
+                                        execute_imap_sync(&acct).await?;
+                                    }
+                                    MailerType::GmailApi => {
                                         if OAuth2AccessToken::get(account.id).await?.is_none() {
                                             if utc_now!() % 300_000 == 0 {
                                                 warn!("Account {}: Sync aborted. OAuth2 authorization not completed. Please visit the rustmailer admin page to authorize this account.", account_id);
                                             }
                                             return Ok(());
                                         }
+                                        let acct = account.clone();
+                                        execute_gmail_sync(&acct).await?;
                                     }
-                                    let acct = account.clone();
-                                    run_sync_with_watchdog(account_id, async move {
-                                        execute_imap_sync(&acct).await
-                                    })
-                                    .await;
-                                }
-                                MailerType::GmailApi => {
-                                    if OAuth2AccessToken::get(account.id).await?.is_none() {
-                                        if utc_now!() % 300_000 == 0 {
-                                            warn!("Account {}: Sync aborted. OAuth2 authorization not completed. Please visit the rustmailer admin page to authorize this account.", account_id);
+                                    MailerType::GraphApi => {
+                                        if OAuth2AccessToken::get(account.id).await?.is_none() {
+                                            if utc_now!() % 300_000 == 0 {
+                                                warn!("Account {}: Sync aborted. OAuth2 authorization not completed. Please visit the rustmailer admin page to authorize this account.", account_id);
+                                            }
+                                            return Ok(());
                                         }
-                                        return Ok(());
+                                        let acct = account.clone();
+                                        execute_outlook_sync(&acct).await?;
                                     }
-                                    let acct = account.clone();
-                                    run_sync_with_watchdog(account_id, async move {
-                                        execute_gmail_sync(&acct).await
-                                    })
-                                    .await;
-                                }
-                                MailerType::GraphApi => {
-                                    if OAuth2AccessToken::get(account.id).await?.is_none() {
-                                        if utc_now!() % 300_000 == 0 {
-                                            warn!("Account {}: Sync aborted. OAuth2 authorization not completed. Please visit the rustmailer admin page to authorize this account.", account_id);
-                                        }
-                                        return Ok(());
-                                    }
-                                    let acct = account.clone();
-                                    run_sync_with_watchdog(account_id, async move {
-                                        execute_outlook_sync(&acct).await
-                                    })
-                                    .await;
                                 }
                             }
                         }
+                        None => {
+                            error!(
+                                "Account {}: Sync aborted. Account entity not found.",
+                                account_id
+                            );
+                        }
                     }
-                    None => {
-                        error!(
-                            "Account {}: Sync aborted. Account entity not found.",
-                            account_id
-                        );
-                    }
-                }
+                    Ok(())
+                })
+                .await;
                 Ok(())
             })
         };
